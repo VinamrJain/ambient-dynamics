@@ -7,3 +7,6 @@ version = "0.1.0"
 [tasks]
 
 [dependencies]
+numpy = ">=2.3.3,<3"
+gymnasium = ">=1.2.0,<2"
+typing = ">=3.10.0.0,<4"
