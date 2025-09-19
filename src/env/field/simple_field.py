@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Dict, Any
-from ..abstract_field import AbstractField
-from ...utils.types import GridPosition, Displacement, GridConfig
+from .abstract_field import AbstractField
+from ..utils.types import GridPosition, Displacement, GridConfig
 
 class SimpleField(AbstractField):
     """Simple field implementation with uniform random displacements."""

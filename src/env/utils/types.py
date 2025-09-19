@@ -19,9 +19,21 @@ class VerticalAction(NamedTuple):
 class GridConfig(NamedTuple):
     """Grid environment configuration."""
     n_x: int
-    n_y: int  
+    n_y: int
     n_z: int
     d_max: int  # Maximum displacement magnitude
+
+    @classmethod
+    def create(cls, n_x: int, n_y: int, n_z: int, d_max: int) -> 'GridConfig':
+        """Create GridConfig with validation."""
+        if n_x <= 0 or n_y <= 0 or n_z <= 0:
+            raise ValueError("Grid dimensions must be positive integers")
+        if d_max < 0:
+            raise ValueError("Maximum displacement must be non-negative")
+        if d_max >= min(n_x, n_y):
+            raise ValueError("Maximum displacement should be smaller than grid dimensions")
+
+        return cls(n_x, n_y, n_z, d_max)
 
 # Type aliases
 State = Dict[str, Any]

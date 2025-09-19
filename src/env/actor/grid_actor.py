@@ -7,18 +7,20 @@ class GridActor(AbstractActor):
     """Basic grid actor with simple vertical dynamics."""
     
     def __init__(self, config: GridConfig, initial_position: GridPosition,
-                 noise_prob: float = 0.1):
+                 noise_prob: float = 0.1, seed: int = None):
         """
         Initialize grid actor.
-        
+
         Args:
             config: Grid configuration
             initial_position: Starting position
             noise_prob: Probability of action noise
+            seed: Random seed for reproducibility
         """
         super().__init__(config, initial_position)
         self.noise_prob = noise_prob
-        self._rng = np.random.RandomState()
+        self.seed = seed
+        self._rng = np.random.RandomState(seed)
     
     def step_vertical(self, action: VerticalAction) -> GridPosition:
         """Execute vertical action with noise."""
