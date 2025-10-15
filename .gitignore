@@ -5,3 +5,7 @@
 
 .DS_Store
 __pycache__
+*.code-workspace
+env_notes.md
+output/
+VISUALIZATION_README.md
