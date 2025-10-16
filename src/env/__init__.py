@@ -1,48 +1,36 @@
-from .environment import GridEnvironment
-from .field.simple_field import SimpleField
-from .actor.grid_actor import GridActor
-from .utils.types import GridConfig, GridPosition
+"""Grid Environment - Discrete POMDP for RL research."""
 
-# Note: Environment registration moved to separate function to avoid import issues
-# Call register_environments() after installing the package
+from .environment import GridEnvironment
+from .arena import AbstractArena, GridArena
+from .field.abstract_field import AbstractField
+from .field.simple_field import SimpleField
+from .actor.abstract_actor import AbstractActor
+from .actor.grid_actor import GridActor
+from .rendering.renderer import Renderer
+from .utils.types import (
+    GridConfig,
+    GridPosition,
+    DisplacementObservation,
+    ArenaState,
+)
 
 __all__ = [
+    # Core environment
     'GridEnvironment',
+    # Arena
+    'AbstractArena',
+    'GridArena',
+    # Field
+    'AbstractField',
     'SimpleField',
+    # Actor
+    'AbstractActor',
     'GridActor',
+    # Rendering
+    'Renderer',
+    # Types
     'GridConfig',
     'GridPosition',
-    'register_environments'
+    'DisplacementObservation',
+    'ArenaState',
 ]
-
-def register_environments():
-    """Register gymnasium environments. Call this after package installation."""
-    try:
-        from gymnasium.envs.registration import register
-
-        register(
-            id='GridEnv-v0',
-            entry_point='src.env:GridEnvironment',
-            max_episode_steps=1000,
-            kwargs={
-                'field': None,  # Must be provided when creating environment
-                'actor': None,  # Must be provided when creating environment
-                'config': GridConfig(5, 5, 3, 1),  # Default config
-            }
-        )
-
-        register(
-            id='GridEnv-Simple-v0',
-            entry_point='src.env:GridEnvironment',
-            max_episode_steps=100,
-            kwargs={
-                'field': None,
-                'actor': None,
-                'config': GridConfig(5, 5, 3, 1),
-            }
-        )
-
-        print("Grid environments registered successfully!")
-
-    except ImportError:
-        print("Warning: gymnasium not available. Environment registration skipped.")

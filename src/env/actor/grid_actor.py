@@ -1,54 +1,92 @@
+"""Basic grid actor implementation with stochastic vertical dynamics."""
+
 import numpy as np
-from typing import Dict, Any
+import jax
+import jax.numpy as jnp
+
 from .abstract_actor import AbstractActor
-from ..utils.types import GridPosition, VerticalAction, GridConfig
+from ..utils.types import GridPosition, GridConfig
+
 
 class GridActor(AbstractActor):
-    """Basic grid actor with simple vertical dynamics."""
+    """Basic grid actor with noisy vertical dynamics.
     
-    def __init__(self, config: GridConfig, initial_position: GridPosition,
-                 noise_prob: float = 0.1, seed: int = None):
-        """
-        Initialize grid actor.
-
+    Vertical actions are executed with some noise probability:
+    - With probability (1 - noise_prob): execute intended action
+    - With probability noise_prob: execute random action from {-1, 0, +1}
+    """
+    
+    def __init__(self, config: GridConfig, noise_prob: float = 0.1):
+        """Initialize grid actor.
+        
         Args:
-            config: Grid configuration
-            initial_position: Starting position
-            noise_prob: Probability of action noise
-            seed: Random seed for reproducibility
+            config: Grid configuration.
+            noise_prob: Probability of random action noise in [0, 1].
         """
-        super().__init__(config, initial_position)
-        self.noise_prob = noise_prob
-        self.seed = seed
-        self._rng = np.random.RandomState(seed)
+        super().__init__(config)
+        self.noise_prob = float(noise_prob)
+        
+        if not 0.0 <= noise_prob <= 1.0:
+            raise ValueError(f"noise_prob must be in [0, 1], got {noise_prob}")
     
-    def step_vertical(self, action: VerticalAction) -> GridPosition:
-        """Execute vertical action with noise."""
-        # Determine vertical displacement
-        if self._rng.random() < self.noise_prob:
-            # Add noise: random displacement in {-1, 0, +1}
-            z_displacement = self._rng.choice([-1, 0, 1])
-        else:
-            # Execute intended action
-            z_displacement = action.action
+    def step_vertical(
+        self, position: GridPosition, action: int, rng_key: jnp.ndarray
+    ) -> GridPosition:
+        """Apply vertical action with noise (functional/stateless).
         
-        # Apply displacement with boundary enforcement
-        new_k = self.enforce_vertical_boundaries(self.position.k + z_displacement)
+        Args:
+            position: Current position.
+            action: Vertical action (0=down, 1=stay, 2=up).
+            rng_key: JAX PRNG key for stochastic dynamics.
+            
+        Returns:
+            New position after vertical action (may be outside bounds).
+        """
+        # Map action to displacement: 0→-1, 1→0, 2→+1
+        intended_displacement = action - 1
         
-        # Update position
-        self.position = GridPosition(self.position.i, self.position.j, new_k)
-        return self.position
+        # Determine if noise occurs
+        noise_key, disp_key = jax.random.split(rng_key)
+        use_noise = jax.random.bernoulli(noise_key, self.noise_prob)
+        
+        # Sample random displacement if noise
+        random_displacement = jax.random.randint(
+            disp_key, shape=(), minval=-1, maxval=2
+        )
+        
+        # Select displacement based on noise
+        z_displacement = jax.lax.select(
+            use_noise,
+            random_displacement,
+            intended_displacement
+        )
+        
+        # Apply vertical displacement (no boundary enforcement here)
+        new_k = position.k + int(z_displacement)
+        
+        return GridPosition(position.i, position.j, new_k)
     
-    def get_vertical_displacement_pmf(self, action: VerticalAction) -> np.ndarray:
-        """Return PMF over vertical displacements."""
-        pmf = np.zeros(3)  # For displacements {-1, 0, +1}
+    def get_vertical_displacement_pmf(self, action: int) -> np.ndarray:
+        """Get PMF over vertical displacements for analysis.
         
-        # Intended action probability
-        intended_idx = action.action + 1  # Map {-1,0,+1} -> {0,1,2}
-        pmf[intended_idx] = 1 - self.noise_prob
+        Args:
+            action: Vertical action (0=down, 1=stay, 2=up).
+            
+        Returns:
+            PMF array of length 3 for displacements {-1, 0, +1}.
+        """
+        # Map action to intended displacement
+        intended_displacement = action - 1
         
-        # Noise probability distributed uniformly
-        noise_prob_each = self.noise_prob / 3
+        # Initialize PMF for {-1, 0, +1}
+        pmf = np.zeros(3, dtype=np.float32)
+        
+        # Noise contributes uniform probability to all displacements
+        noise_prob_each = self.noise_prob / 3.0
         pmf += noise_prob_each
+        
+        # Intended action gets remaining probability
+        intended_idx = intended_displacement + 1  # Map {-1,0,+1} → {0,1,2}
+        pmf[intended_idx] += (1.0 - self.noise_prob)
         
         return pmf

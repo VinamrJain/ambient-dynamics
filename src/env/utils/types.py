@@ -1,27 +1,37 @@
-from typing import NamedTuple, Tuple, Dict, Any
+"""Type definitions for the grid environment."""
+
+from typing import NamedTuple, Tuple, Dict, Any, Optional
 import numpy as np
 
+
 class GridPosition(NamedTuple):
-    """3D grid position coordinates."""
-    i: int  # x-coordinate
-    j: int  # y-coordinate  
-    k: int  # z-coordinate
+    """3D grid position coordinates (1-indexed)."""
+    i: int  # x-coordinate [1, n_x]
+    j: int  # y-coordinate [1, n_y]
+    k: int  # z-coordinate (altitude) [1, n_z]
 
-class Displacement(NamedTuple):
-    """2D horizontal displacement."""
-    u: int  # x-displacement
-    v: int  # y-displacement
 
-class VerticalAction(NamedTuple):
-    """Vertical control action."""
-    action: int  # -1: down, 0: stay, +1: up
+class DisplacementObservation(NamedTuple):
+    """Observed displacement (can be continuous or discrete).
+    
+    For continuous variant: u, v are floats from underlying field.
+    For discrete variant: u, v are integers.
+    Both are supported by using float type.
+    """
+    u: float  # x-displacement (continuous observation)
+    v: float  # y-displacement (continuous observation)
+    
+    def to_discrete(self) -> Tuple[int, int]:
+        """Convert to discrete displacement by rounding."""
+        return (int(round(self.u)), int(round(self.v)))
+
 
 class GridConfig(NamedTuple):
     """Grid environment configuration."""
-    n_x: int
-    n_y: int
-    n_z: int
-    d_max: int  # Maximum displacement magnitude
+    n_x: int  # Grid size in x dimension
+    n_y: int  # Grid size in y dimension
+    n_z: int  # Grid size in z dimension (altitude levels)
+    d_max: int  # Maximum displacement magnitude in each direction
 
     @classmethod
     def create(cls, n_x: int, n_y: int, n_z: int, d_max: int) -> 'GridConfig':
@@ -32,10 +42,18 @@ class GridConfig(NamedTuple):
             raise ValueError("Maximum displacement must be non-negative")
         if d_max >= min(n_x, n_y):
             raise ValueError("Maximum displacement should be smaller than grid dimensions")
-
         return cls(n_x, n_y, n_z, d_max)
 
-# Type aliases
+
+class ArenaState(NamedTuple):
+    """Complete arena state (for checkpointing and analysis)."""
+    position: GridPosition
+    last_position: GridPosition
+    last_displacement: DisplacementObservation
+    step_count: int
+    out_of_bounds: bool = False
+
+
+# Type aliases for flexibility
 State = Dict[str, Any]
-Observation = Dict[str, Any]
 Info = Dict[str, Any]
