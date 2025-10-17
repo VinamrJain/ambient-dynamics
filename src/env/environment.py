@@ -71,12 +71,12 @@ class GridEnvironment(gym.Env):
         # Step arena (simulator)
         observation = self.arena.step(action)
         
-        # Update renderer if present
-        if self._renderer is not None:
-            self._renderer.step(self.arena.get_state())
-        
         # Compute reward (arena-specific)
         reward = self.arena.compute_reward()
+        
+        # Update renderer if present (renderer gets all info from arena state)
+        if self._renderer is not None:
+            self._renderer.step(self.arena.get_state())
         
         # Check termination
         terminated = self.arena.is_terminal()

@@ -10,7 +10,7 @@ from .abstract_arena import AbstractArena
 from ..field.abstract_field import AbstractField
 from ..actor.abstract_actor import AbstractActor
 from ..utils.types import (
-    GridPosition, DisplacementObservation, GridConfig, ArenaState
+    GridPosition, DisplacementObservation, GridConfig, ArenaState, GridArenaState
 )
 
 
@@ -61,6 +61,8 @@ class GridArena(AbstractArena):
         self.step_count = 0
         self._out_of_bounds = False
         self._rng = None
+        self._last_action = None
+        self._last_reward = 0.0
     
     def reset(self, rng_key: jnp.ndarray) -> np.ndarray:
         """Reset arena to initial state."""
@@ -77,11 +79,16 @@ class GridArena(AbstractArena):
         self.last_displacement = DisplacementObservation(0.0, 0.0)
         self.step_count = 0
         self._out_of_bounds = False
+        self._last_action = None
+        self._last_reward = 0.0
         
         return self._get_observation()
     
     def step(self, action: int) -> np.ndarray:
         """Execute one simulation step."""
+        # Track action
+        self._last_action = action
+        
         # Split RNG keys for field and actor
         field_key, actor_key, self._rng = jax.random.split(self._rng, 3)
         
@@ -116,23 +123,34 @@ class GridArena(AbstractArena):
         
         return self._get_observation()
     
-    def get_state(self) -> ArenaState:
-        """Get complete arena state."""
-        return ArenaState(
+    def get_state(self) -> GridArenaState:
+        """Get complete grid arena state."""
+        return GridArenaState(
             position=self.position,
             last_position=self.last_position,
-            last_displacement=self.last_displacement,
             step_count=self.step_count,
-            out_of_bounds=self._out_of_bounds
+            last_action=self._last_action,
+            last_reward=self._last_reward,
+            rng_key=self._rng,
+            out_of_bounds=self._out_of_bounds,
+            last_displacement=self.last_displacement
         )
     
     def set_state(self, state: ArenaState) -> None:
-        """Restore arena state."""
+        """Restore grid arena state."""
         self.position = state.position
         self.last_position = state.last_position
-        self.last_displacement = state.last_displacement
         self.step_count = state.step_count
+        self._last_action = state.last_action
+        self._last_reward = state.last_reward
+        self._rng = state.rng_key
         self._out_of_bounds = state.out_of_bounds
+        
+        # Restore grid-specific fields if available
+        if isinstance(state, GridArenaState):
+            self.last_displacement = state.last_displacement
+        else:
+            self.last_displacement = DisplacementObservation(0.0, 0.0)
     
     def compute_reward(self) -> float:
         """Default reward (override in subclasses for specific tasks)."""

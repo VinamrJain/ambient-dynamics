@@ -1,13 +1,6 @@
-from .simple_renderer import SimpleRenderer
-from .advanced_renderer import AdvancedRenderer
-from .visualization_recorder import VisualizationRecorder
-from .grid_3d_renderer import Grid3DRenderer
-from .animation_generator import AnimationGenerator
+"""Rendering components for visualization."""
 
-__all__ = [
-    'SimpleRenderer',
-    'AdvancedRenderer',
-    'VisualizationRecorder',
-    'Grid3DRenderer',
-    'AnimationGenerator'
-]
+from .renderer import Renderer
+from .navigation_renderer import NavigationRenderer
+
+__all__ = ['Renderer', 'NavigationRenderer']

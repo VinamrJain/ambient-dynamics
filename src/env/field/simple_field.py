@@ -14,6 +14,9 @@ class SimpleField(AbstractField):
     
     Each position experiences independent uniform random displacement
     in {-d_max, ..., +d_max} x {-d_max, ..., +d_max}.
+    
+    This is a stateless field - displacements are sampled independently
+    on each call, so reset() is a no-op.
     """
     
     def __init__(self, config: GridConfig):
@@ -23,11 +26,15 @@ class SimpleField(AbstractField):
             config: Grid configuration.
         """
         super().__init__(config)
-        self._rng_key = None
     
     def reset(self, rng_key: jnp.ndarray) -> None:
-        """Reset field with new RNG key."""
-        self._rng_key = rng_key
+        """Reset field (no-op for stateless simple field).
+        
+        Args:
+            rng_key: RNG key (unused - displacements sampled fresh each time).
+        """
+        # No state to reset - each sample_displacement call is independent
+        pass
     
     def sample_displacement(
         self, position: GridPosition, rng_key: jnp.ndarray

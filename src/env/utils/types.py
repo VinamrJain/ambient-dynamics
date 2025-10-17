@@ -1,7 +1,9 @@
 """Type definitions for the grid environment."""
 
 from typing import NamedTuple, Tuple, Dict, Any, Optional
+from dataclasses import dataclass
 import numpy as np
+import jax.numpy as jnp
 
 
 class GridPosition(NamedTuple):
@@ -53,10 +55,38 @@ class GridConfig(NamedTuple):
         return cls(n_x, n_y, n_z, d_max)
 
 
-class ArenaState(NamedTuple):
-    """Complete arena state (for checkpointing and analysis)."""
+@dataclass(frozen=True)
+class ArenaState:
+    """Base arena state (common across all arena types).
+    
+    Using frozen dataclass for immutability and inheritance support.
+    All arenas should track these core fields for reproducibility and analysis.
+    """
     position: GridPosition
-    last_position: GridPosition
-    last_displacement: DisplacementObservation
+    last_position: Optional[GridPosition]
     step_count: int
+    last_action: Optional[int]  # For logging/visualization
+    last_reward: float  # For logging/visualization
+    rng_key: jnp.ndarray  # For reproducibility/checkpointing
     out_of_bounds: bool = False
+
+
+@dataclass(frozen=True)
+class GridArenaState(ArenaState):
+    """Grid arena state (adds field displacement observation).
+    
+    Extends base state with grid-specific displacement observations.
+    """
+    last_displacement: Optional[DisplacementObservation] = None
+
+
+@dataclass(frozen=True)
+class NavigationArenaState(GridArenaState):
+    """Navigation arena state (adds navigation-specific fields).
+    
+    Extends grid state with navigation task information.
+    """
+    target_position: GridPosition = None
+    vicinity_radius: float = 0.0
+    cumulative_reward: float = 0.0
+    target_reached: bool = False
