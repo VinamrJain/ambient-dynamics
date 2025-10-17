@@ -14,16 +14,24 @@ class GridPosition(NamedTuple):
 class DisplacementObservation(NamedTuple):
     """Observed displacement (can be continuous or discrete).
     
+    Following BLE's units.py pattern: stores continuous values but provides
+    integer properties for discrete state transitions.
+    
     For continuous variant: u, v are floats from underlying field.
-    For discrete variant: u, v are integers.
-    Both are supported by using float type.
+    For discrete variant: u, v are integers cast to float.
     """
     u: float  # x-displacement (continuous observation)
     v: float  # y-displacement (continuous observation)
     
-    def to_discrete(self) -> Tuple[int, int]:
-        """Convert to discrete displacement by rounding."""
-        return (int(round(self.u)), int(round(self.v)))
+    @property
+    def u_int(self) -> int:
+        """Get discrete x-displacement by rounding."""
+        return int(round(self.u))
+    
+    @property
+    def v_int(self) -> int:
+        """Get discrete y-displacement by rounding."""
+        return int(round(self.v))
 
 
 class GridConfig(NamedTuple):
@@ -52,8 +60,3 @@ class ArenaState(NamedTuple):
     last_displacement: DisplacementObservation
     step_count: int
     out_of_bounds: bool = False
-
-
-# Type aliases for flexibility
-State = Dict[str, Any]
-Info = Dict[str, Any]

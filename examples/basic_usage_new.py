@@ -29,7 +29,7 @@ def main():
     field = SimpleField(config)
     
     # 3. Create actor (vertical dynamics)
-    actor = GridActor(config, noise_prob=0.1)
+    actor = GridActor(noise_prob=0.1)
     
     # 4. Create arena (simulator + task logic)
     arena = GridArena(

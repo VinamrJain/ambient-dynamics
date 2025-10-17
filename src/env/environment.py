@@ -12,7 +12,7 @@ from .rendering.renderer import Renderer
 
 
 class GridEnvironment(gym.Env):
-    """Grid RL Environment - wraps Arena (following BLE pattern).
+    """Grid RL Environment
     
     This class provides the Gymnasium RL interface by wrapping an Arena
     that handles simulation and task logic. Follows the architecture pattern
@@ -39,8 +39,7 @@ class GridEnvironment(gym.Env):
         self.arena = arena
         self.max_steps = max_steps
         self._renderer = renderer
-        self._global_step = 0
-        self._episode_step = 0
+        self._episode_step = 0  ## TODO: may add a global step counter later?
         
         # Define action and observation spaces
         self.action_space = gym.spaces.Discrete(3)  # 0=down, 1=stay, 2=up
@@ -86,8 +85,6 @@ class GridEnvironment(gym.Env):
         
         # Build info dict
         info = self._get_info()
-        
-        self._global_step += 1
         
         return observation, reward, terminated, truncated, info
     

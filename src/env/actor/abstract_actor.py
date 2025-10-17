@@ -1,27 +1,22 @@
 """Abstract actor interface for vertical dynamics."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
 import numpy as np
 import jax.numpy as jnp
 
-from ..utils.types import GridPosition, GridConfig
+from ..utils.types import GridPosition
 
 
 class AbstractActor(ABC):
     """Abstract base class for actors with vertical dynamics.
     
     Actors control vertical (altitude) movement. Horizontal movement is
-    determined by the field. No boundary enforcement - that's the arena's job.
+    determined by the field. Boundary enforcement is handled by the arena.
     """
     
-    def __init__(self, config: GridConfig):
-        """Initialize actor with configuration.
-        
-        Args:
-            config: Grid configuration.
-        """
-        self.config = config
+    def __init__(self):
+        """Initialize actor."""
+        pass
     
     @abstractmethod
     def step_vertical(
@@ -39,15 +34,25 @@ class AbstractActor(ABC):
         """
         pass
     
-    @abstractmethod
-    def get_vertical_displacement_pmf(self, action: int) -> np.ndarray:
-        """Get PMF over vertical displacements for analysis (e.g., DP/VI).
+    # Optional method for analysis
+    def get_vertical_displacement_pmf(self) -> np.ndarray:
+        """Get full PMF over vertical displacements for all actions.
         
-        Args:
-            action: Vertical action (0=down, 1=stay, 2=up).
-            
         Returns:
-            PMF array where entry [i] is P(z_displacement = i - z_max).
-            For example, with actions in {-1, 0, +1}, this returns a 3-element array.
+            PMF array of shape (3, 2*z_max+1) where entry [a, j] is:
+                P(z_displacement = j - z_max | action = a)
+            
+            where:
+                - a ∈ {0, 1, 2} is action index (0=down, 1=stay, 2=up)
+                - j ∈ {0, ..., 2*z_max} is displacement index
+                - z_max is the maximum vertical displacement magnitude
+            
+            Example for z_max=2:
+                - Shape: (3, 5) for displacements {-2, -1, 0, +1, +2}
+                - pmf[0, 0] = P(z=-2 | action=0=down)
+                - pmf[1, 2] = P(z=0 | action=1=stay)
+                - pmf[2, 4] = P(z=+2 | action=2=up)
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support vertical displacement PMF analysis."
+        )

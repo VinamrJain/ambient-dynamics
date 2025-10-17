@@ -13,7 +13,7 @@ from ..utils.types import ArenaState
 
 
 class AbstractArena(ABC):
-    """Abstract arena interface (simulator + task logic).
+    """Abstract arena interface.
     
     Following BLE's BalloonArenaInterface pattern, the arena contains:
     - Physics/dynamics simulation (field + actor interactions)
@@ -53,7 +53,7 @@ class AbstractArena(ABC):
         
         Returns:
             Current arena state including position, history, metadata.
-        """
+        """ ## TODO: possibly add the continuous field to the state?
         pass
     
     @abstractmethod

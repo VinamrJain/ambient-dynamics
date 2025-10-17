@@ -91,9 +91,8 @@ class GridArena(AbstractArena):
         )
         
         # 2. Apply horizontal displacement (discrete state transition)
-        du, dv = displacement_obs.to_discrete()
-        new_i = self.position.i + du
-        new_j = self.position.j + dv
+        new_i = self.position.i + displacement_obs.u_int
+        new_j = self.position.j + displacement_obs.v_int
         new_k = self.position.k
         
         # Store last position before update
