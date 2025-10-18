@@ -17,3 +17,6 @@ jax = ">=0.4.0,<1"
 jaxlib = ">=0.4.0,<1"
 plotly = ">=5.0.0,<6"
 imageio = ">=2.0.0,<3"
+
+[pypi-dependencies]
+kaleido = "==0.2.1"

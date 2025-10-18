@@ -58,8 +58,6 @@ def main():
     # 5. Create renderer (extracts all info from arena state)
     renderer = NavigationRenderer(
         config=config,
-        width=1200,
-        height=900,
         show_grid_points=True,
         backend='plotly'
     )
