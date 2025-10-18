@@ -4,7 +4,7 @@ from typing import NamedTuple, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 import numpy as np
 import jax.numpy as jnp
-
+from dataclasses import asdict
 
 class GridPosition(NamedTuple):
     """3D grid position coordinates (1-indexed)."""
@@ -59,34 +59,75 @@ class GridConfig(NamedTuple):
 class ArenaState:
     """Base arena state (common across all arena types).
     
+    Contains only truly universal fields that apply to ANY arena implementation.
     Using frozen dataclass for immutability and inheritance support.
-    All arenas should track these core fields for reproducibility and analysis.
+    
+    Fields:
+        step_count: Number of steps taken in current episode
+        last_action: Most recent action (None at episode start)
+        last_reward: Reward from last step
+        rng_key: JAX PRNG key for reproducibility
     """
-    position: GridPosition
-    last_position: Optional[GridPosition]
     step_count: int
-    last_action: Optional[int]  # For logging/visualization
-    last_reward: float  # For logging/visualization
-    rng_key: jnp.ndarray  # For reproducibility/checkpointing
-    out_of_bounds: bool = False
+    last_action: Optional[int]
+    last_reward: float
+    rng_key: jnp.ndarray
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert state to dictionary (includes all fields from subclasses)."""
+        return asdict(self)
 
 
 @dataclass(frozen=True)
 class GridArenaState(ArenaState):
-    """Grid arena state (adds field displacement observation).
+    """Grid arena state (adds spatial state and grid-specific fields).
     
-    Extends base state with grid-specific displacement observations.
+    Extends base state with grid world spatial information.
+    
+    Dynamic state:
+        position: Current grid position
+        last_position: Previous position (for trajectory tracking)
+        last_displacement: Last observed field displacement
+        out_of_bounds: Whether position violates boundaries
+    
+    Static config (for visualization/reproducibility):
+        initial_position: Starting position for episode
     """
-    last_displacement: Optional[DisplacementObservation] = None
+    position: GridPosition
+    last_position: Optional[GridPosition]
+    last_displacement: Optional[DisplacementObservation]
+    out_of_bounds: bool
+    initial_position: GridPosition  # Static: needed for visualization
 
 
 @dataclass(frozen=True)
 class NavigationArenaState(GridArenaState):
-    """Navigation arena state (adds navigation-specific fields).
+    """Navigation arena state (adds navigation task state and configuration).
     
-    Extends grid state with navigation task information.
+    Extends grid state with navigation-specific information.
+    
+    Dynamic state:
+        cumulative_reward: Total reward accumulated in episode
+        target_reached: Whether target vicinity has been reached
+    
+    Static config (for visualization/analysis):
+        target_position: Goal position
+        vicinity_radius: Radius defining "reached" region
+        distance_reward_weight: Weight for distance penalty (for analysis)
+        vicinity_bonus: Reward for staying in vicinity (for analysis)
+        step_penalty: Per-step penalty (for analysis)
+        use_distance_decay: Whether vicinity bonus decays
+        decay_rate: Exponential decay rate for vicinity bonus
     """
-    target_position: GridPosition = None
-    vicinity_radius: float = 0.0
-    cumulative_reward: float = 0.0
-    target_reached: bool = False
+    # Dynamic navigation state
+    cumulative_reward: float
+    target_reached: bool
+    
+    # Static task configuration (for visualization/analysis)
+    target_position: GridPosition
+    vicinity_radius: float
+    distance_reward_weight: float
+    vicinity_bonus: float
+    step_penalty: float
+    use_distance_decay: bool
+    decay_rate: float

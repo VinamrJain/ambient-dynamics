@@ -156,17 +156,18 @@ class GridEnvironment(gym.Env):
         return self
     
     def _get_info(self) -> Dict[str, Any]:
-        """Construct info dictionary.
+        """Construct info dictionary from complete arena state.
         
         Returns:
-            Dictionary with episode metadata.
+            Dictionary with all arena state fields plus episode metadata.
         """
         state = self.arena.get_state()
-        return {
-            'position': state.position,
-            'last_displacement': state.last_displacement,
-            'step_count': state.step_count,
-            'episode_step': self._episode_step,
-            'is_terminal': self.arena.is_terminal(),
-            'out_of_bounds': state.out_of_bounds
-        }
+        
+        # Convert arena state to dict (includes all fields from subclasses)
+        info = state.to_dict()
+        
+        # Add environment-level metadata
+        info['episode_step'] = self._episode_step
+        info['is_terminal'] = self.arena.is_terminal()
+        
+        return info

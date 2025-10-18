@@ -1,4 +1,4 @@
-"""Grid Environment - Discrete POMDP for RL research."""
+"""Grid Environment"""
 
 from .environment import GridEnvironment
 from .arena import AbstractArena, GridArena, NavigationArena

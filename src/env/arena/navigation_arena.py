@@ -143,37 +143,45 @@ class NavigationArena(GridArena):
         # Get base grid arena state
         base_state = super().get_state()
         
-        # Create extended navigation state
+        # Create extended navigation state with full config
         return NavigationArenaState(
-            # Base fields
-            position=base_state.position,
-            last_position=base_state.last_position,
+            # Universal state
             step_count=base_state.step_count,
             last_action=base_state.last_action,
             last_reward=base_state.last_reward,
             rng_key=base_state.rng_key,
-            out_of_bounds=base_state.out_of_bounds,
-            # Grid arena fields
+            # Grid state
+            position=base_state.position,
+            last_position=base_state.last_position,
             last_displacement=base_state.last_displacement,
-            # Navigation-specific fields
+            out_of_bounds=base_state.out_of_bounds,
+            initial_position=base_state.initial_position,
+            # Navigation dynamic state
+            cumulative_reward=self._cumulative_reward,
+            target_reached=self._target_reached,
+            # Navigation static config (for visualization/analysis)
             target_position=self.target_position,
             vicinity_radius=self.vicinity_radius,
-            cumulative_reward=self._cumulative_reward,
-            target_reached=self._target_reached
+            distance_reward_weight=self.distance_reward_weight,
+            vicinity_bonus=self.vicinity_bonus,
+            step_penalty=self.step_penalty,
+            use_distance_decay=self.use_distance_decay,
+            decay_rate=self.decay_rate
         )
     
     def set_state(self, state: ArenaState) -> None:
         """Restore navigation arena state."""
-        # Let parent restore base fields
+        # Let parent restore base and grid fields
         super().set_state(state)
         
-        # Restore navigation-specific fields if available
+        # Restore navigation-specific dynamic state if available
         if isinstance(state, NavigationArenaState):
-            # Target params are fixed, but restore dynamic state
             self._cumulative_reward = state.cumulative_reward
             self._target_reached = state.target_reached
+            # Note: Task config (target_position, vicinity_radius, weights) are static
+            # and set during __init__, not restored from state
         else:
-            # Reset navigation state if given only base state
+            # Reset navigation state if given only base/grid state
             self._cumulative_reward = 0.0
             self._target_reached = False
 

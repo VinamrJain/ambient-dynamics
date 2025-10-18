@@ -126,31 +126,48 @@ class GridArena(AbstractArena):
     def get_state(self) -> GridArenaState:
         """Get complete grid arena state."""
         return GridArenaState(
-            position=self.position,
-            last_position=self.last_position,
+            # Universal state
             step_count=self.step_count,
             last_action=self._last_action,
             last_reward=self._last_reward,
             rng_key=self._rng,
+            # Grid-specific dynamic state
+            position=self.position,
+            last_position=self.last_position,
+            last_displacement=self.last_displacement,
             out_of_bounds=self._out_of_bounds,
-            last_displacement=self.last_displacement
+            # Static config
+            initial_position=self.initial_position
         )
     
     def set_state(self, state: ArenaState) -> None:
         """Restore grid arena state."""
-        self.position = state.position
-        self.last_position = state.last_position
+        # Restore universal state
         self.step_count = state.step_count
         self._last_action = state.last_action
         self._last_reward = state.last_reward
         self._rng = state.rng_key
-        self._out_of_bounds = state.out_of_bounds
         
         # Restore grid-specific fields if available
         if isinstance(state, GridArenaState):
+            self.position = state.position
+            self.last_position = state.last_position
             self.last_displacement = state.last_displacement
+            self._out_of_bounds = state.out_of_bounds
+            # Note: initial_position is static config, not restored
         else:
+            # Fallback for base ArenaState (shouldn't happen in practice)
+            import warnings
+            warnings.warn(
+                f"GridArena.set_state() received {type(state).__name__} instead of "
+                f"GridArenaState. Resetting grid-specific fields to defaults.",
+                UserWarning,
+                stacklevel=2
+            )
+            self.position = self.initial_position
+            self.last_position = self.initial_position
             self.last_displacement = DisplacementObservation(0.0, 0.0)
+            self._out_of_bounds = False
     
     def compute_reward(self) -> float:
         """Default reward (override in subclasses for specific tasks)."""

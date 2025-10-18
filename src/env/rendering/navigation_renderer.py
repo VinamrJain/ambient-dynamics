@@ -137,13 +137,16 @@ class NavigationRenderer(Renderer):
         # 3. Target marker
         self._add_target(fig, current_state)
         
-        # 4. Trajectory
+        # 4. Initial position marker
+        self._add_initial_position(fig, current_state)
+        
+        # 5. Trajectory
         self._add_trajectory(fig)
         
-        # 5. Current actor position
+        # 6. Current actor position
         self._add_actor(fig, current_state)
         
-        # 6. Configure layout
+        # 7. Configure layout
         self._configure_layout(fig, current_state)
         
         return fig
@@ -210,6 +213,24 @@ class NavigationRenderer(Renderer):
                 line=dict(color='darkgreen', width=2)
             ),
             name='Target',
+            showlegend=True
+        ))
+    
+    def _add_initial_position(self, fig: go.Figure, state: NavigationArenaState):
+        """Add initial position marker."""
+        fig.add_trace(go.Scatter3d(
+            x=[state.initial_position.i],
+            y=[state.initial_position.j],
+            z=[state.initial_position.k],
+            mode='markers',
+            marker=dict(
+                size=self.target_size * 0.8,
+                color='orange',
+                symbol='circle',
+                line=dict(color='darkorange', width=2),
+                opacity=0.7
+            ),
+            name='Start',
             showlegend=True
         ))
     
