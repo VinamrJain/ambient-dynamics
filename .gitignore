@@ -7,7 +7,7 @@
 __pycache__
 *.code-workspace
 env_notes.md
-output/
-VISUALIZATION_README.md
 
 BLE example/
+
+examples/navigation_with_metrics.py

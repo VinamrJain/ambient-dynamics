@@ -1,4 +1,9 @@
-"""Navigation arena renderer using Plotly backend."""
+"""Navigation arena renderer using Plotly backend.
+
+Core visualization logic for navigation tasks. Supports:
+- Standard Gymnasium modes: 'human' (interactive), 'rgb_array' (numpy array)
+- Export methods: save_gif(), save_mp4(), save_html(), save_animated_html()
+"""
 
 from typing import List, Union, Optional
 import numpy as np
@@ -31,7 +36,8 @@ class NavigationRenderer(Renderer):
         height: int = 768,
         show_grid_points: bool = True,
         grid_subsample: Optional[int] = None,
-        backend: str = 'plotly'
+        backend: str = 'plotly',
+        camera_eye: Optional[dict] = None
     ):
         """Initialize navigation renderer.
         
@@ -42,12 +48,19 @@ class NavigationRenderer(Renderer):
             show_grid_points: Whether to show grid points.
             grid_subsample: Subsample factor for grid points (auto if None).
             backend: Rendering backend ('plotly' or 'matplotlib' - future).
+            camera_eye: Optional camera position dict with keys 'x', 'y', 'z'.
+                       Defaults to (1.5, -1.5, 1.0) for 45° perspective view.
+                       Examples:
+                         - Top-down: {'x': 0, 'y': 0, 'z': 2.5}
+                         - Side view: {'x': 2.5, 'y': 0, 'z': 0}
+                         - Isometric: {'x': 1.5, 'y': -1.5, 'z': 1.0}
         """
         self.config = config
         self.width = width
         self.height = height
         self.show_grid_points = show_grid_points
         self.backend = backend
+        self.camera_eye = camera_eye or {'x': 1.5, 'y': -1.5, 'z': 1.0}
         
         # Compute smart scaling based on grid size
         self._compute_scaling()
@@ -105,6 +118,30 @@ class NavigationRenderer(Renderer):
         """Supported render modes."""
         return ['human', 'rgb_array']
     
+    # ========================================================================
+    # Export Methods (delegate to exporters for modularity)
+    # ========================================================================
+    
+    def save_gif(self, output_path: str, fps: int = 10, subsample: int = 1) -> None:
+        from .exporters import save_gif
+        save_gif(self, output_path, fps, subsample)
+    
+    def save_mp4(self, output_path: str, fps: int = 15, subsample: int = 1) -> None:
+        from .exporters import save_mp4
+        save_mp4(self, output_path, fps, subsample=subsample)
+    
+    def save_html(self, output_path: str) -> None:
+        from .exporters import save_html
+        save_html(self, output_path)
+    
+    def save_animated_html(self, output_path: str, fps: int = 10) -> None:
+        from .exporters import save_animated_html
+        save_animated_html(self, output_path, fps)
+    
+    # ========================================================================
+    # Internal visualization methods
+    # ========================================================================
+    
     def _create_figure(self) -> go.Figure:
         """Create Plotly figure with all visualization elements."""
         fig = go.Figure()
@@ -147,37 +184,71 @@ class NavigationRenderer(Renderer):
         
         # Title with episode info
         title_text = (
-            f"Step: {state.step_count} | "
+            f"<b>Step: {state.step_count} | "
             f"Action: {action_name} | "
             f"Reward: {state.last_reward:+.2f} | "
-            f"Cumulative: {state.cumulative_reward:+.2f}"
+            f"Cumulative: {state.cumulative_reward:+.2f}</b>"
+        )
+        
+        # Calculate optimal camera position based on grid size
+        # Position camera at 45-degree angle for good 3D perspective
+        grid_center_x = (self.config.n_x + 1) / 2
+        grid_center_y = (self.config.n_y + 1) / 2
+        grid_center_z = (self.config.n_z + 1) / 2
+        
+        # Camera distance proportional to grid size
+        max_dim = max(self.config.n_x, self.config.n_y, self.config.n_z)
+        camera_distance = max_dim * 1.8
+        
+        # Camera positioned for 3D perspective
+        # Use custom camera if provided, otherwise default to isometric view
+        camera = dict(
+            eye=self.camera_eye,  # Camera position
+            center=dict(x=0, y=0, z=0),  # Look at center
+            up=dict(x=0, y=0, z=1)  # Z-axis is up
         )
         
         fig.update_layout(
-            title=dict(text=title_text, font=dict(size=24, weight='bold')),
+            title=dict(
+                text=title_text, 
+                font=dict(size=22),
+                x=0.5,  # Center title
+                xanchor='center',
+                y=0.98,  # Near top
+                yanchor='top'
+            ),
             scene=dict(
                 xaxis=dict(
                     title=dict(text='X (i)', font=dict(size=20)),
-                    tickfont=dict(size=16),
+                    tickfont=dict(size=14),
                     range=[0.5, self.config.n_x + 0.5]
                 ),
                 yaxis=dict(
                     title=dict(text='Y (j)', font=dict(size=20)),
-                    tickfont=dict(size=16),
+                    tickfont=dict(size=14),
                     range=[0.5, self.config.n_y + 0.5]
                 ),
                 zaxis=dict(
                     title=dict(text='Z (k)', font=dict(size=20)),
-                    tickfont=dict(size=16),
+                    tickfont=dict(size=14),
                     range=[0.5, self.config.n_z + 0.5]
                 ),
-                aspectmode='data'
+                aspectmode='data',
+                camera=camera  # Set camera viewpoint
             ),
             width=self.width,
             height=self.height,
             showlegend=True,
-            legend=dict(x=0.02, y=0.98, font=dict(size=16)),
-            margin=dict(l=0, r=0, t=40, b=0)
+            legend=dict(
+                x=0.01, 
+                y=0.99, 
+                font=dict(size=12),
+                bgcolor='rgba(255, 255, 255, 0.8)',  # Semi-transparent background
+                bordercolor='gray',
+                borderwidth=1
+            ),
+            # Adjust margins to prevent clipping
+            margin=dict(l=10, r=10, t=60, b=10)  # Increased top margin for title
         )
     
     def _fig_to_array(self, fig: go.Figure) -> np.ndarray:
@@ -205,13 +276,9 @@ class NavigationRenderer(Renderer):
         
         except ValueError as e:
             if 'kaleido' in str(e).lower():
-                print("\n⚠️  Note: rgb_array mode requires 'kaleido' package.")
+                print("\nERROR: rgb_array mode requires 'kaleido' package.")
                 print("   Install with: pip install kaleido")
                 print("   For now, use mode='human' to view in browser.")
-                print("   Returning placeholder array.\n")
-                
-                # Return placeholder array
-                return np.zeros((self.height, self.width, 3), dtype=np.uint8)
             else:
                 raise
     
