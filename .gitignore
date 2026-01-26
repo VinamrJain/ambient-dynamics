@@ -6,8 +6,7 @@
 .DS_Store
 __pycache__
 *.code-workspace
-env_notes.md
 
-BLE example/
+output/
 
 examples/navigation_with_metrics.py
