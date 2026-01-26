@@ -5,3 +5,8 @@
 
 .DS_Store
 __pycache__
+*.code-workspace
+
+output/
+
+examples/navigation_with_metrics.py

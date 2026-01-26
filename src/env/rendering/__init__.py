@@ -1,4 +1,6 @@
-from .simple_renderer import SimpleRenderer
-from .advanced_renderer import AdvancedRenderer
+"""Rendering components for visualization."""
 
-__all__ = ['SimpleRenderer', 'AdvancedRenderer']
+from .renderer import Renderer
+from .navigation_renderer import NavigationRenderer
+
+__all__ = ['Renderer', 'NavigationRenderer']
