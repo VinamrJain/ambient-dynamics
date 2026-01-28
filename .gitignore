@@ -8,5 +8,4 @@ __pycache__
 *.code-workspace
 
 output/
-
-examples/navigation_with_metrics.py
+.cursor/
