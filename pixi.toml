@@ -5,8 +5,11 @@ platforms = ["osx-arm64"]
 version = "0.1.0"
 
 [tasks]
+test = "pytest tests/ -v"
+test-field = "pytest tests/field/ -v"
 
 [dependencies]
+pytest = ">=8.0.0,<9"
 numpy = ">=2.3.3,<3"
 gymnasium = ">=1.2.0,<2"
 typing = ">=3.10.0.0,<4"

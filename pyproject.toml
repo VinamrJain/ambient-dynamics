@@ -1,0 +1,22 @@
+# Project configuration for ambient-dynamics
+# Note: Dependencies are managed by pixi (pixi.toml)
+# This file configures development tools like pytest
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",                    # Verbose output
+    "--tb=short",            # Shorter tracebacks
+    "-ra",                   # Show summary of all test outcomes
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+# Markers for categorizing tests
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "visual: marks tests that produce visual output for manual inspection",
+]
