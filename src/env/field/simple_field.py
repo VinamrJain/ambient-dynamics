@@ -1,4 +1,4 @@
-"""Simple field implementation with uniform random displacements."""
+"""Simple field implementation with uniform random displacements on ambient axes."""
 
 import numpy as np
 import jax
@@ -12,8 +12,9 @@ from ..utils.types import GridPosition, DisplacementObservation, GridConfig
 class SimpleField(AbstractField):
     """Simple field with uniform random displacements (discrete).
     
-    Each position experiences independent uniform random displacement
-    in {-d_max, ..., +d_max} x {-d_max, ..., +d_max}.
+    Supports both 2D and 3D settings:
+    - 3D: Samples (u, v) uniformly from {-d_max, ..., +d_max}^2
+    - 2D: Samples (u,) uniformly from {-d_max, ..., +d_max}
     
     This is a stateless field - displacements are sampled independently
     on each call, so reset() is a no-op.
@@ -39,38 +40,40 @@ class SimpleField(AbstractField):
     def sample_displacement(
         self, position: GridPosition, rng_key: jnp.ndarray
     ) -> DisplacementObservation:
-        """Sample uniform random displacement (discrete).
+        """Sample uniform random displacement on ambient axes (discrete).
         
         Args:
             position: Current grid position (unused in this simple field).
             rng_key: JAX PRNG key for sampling.
             
         Returns:
-            Displacement observation with discrete integer values.
+            Displacement observation:
+            - 3D: (u, v) both sampled uniformly
+            - 2D: (u, None) only first ambient axis
         """
-        # Split key for u and v sampling
-        key_u, key_v = jax.random.split(rng_key)
+        d_max = self.config.d_max
         
-        # Sample uniformly from {-d_max, ..., +d_max}
-        u = jax.random.randint(
-            key_u, shape=(), 
-            minval=-self.config.d_max, 
-            maxval=self.config.d_max + 1
-        )
-        v = jax.random.randint(
-            key_v, shape=(), 
-            minval=-self.config.d_max, 
-            maxval=self.config.d_max + 1
-        )
-        
-        # Convert to float for DisplacementObservation
-        return DisplacementObservation(float(u), float(v))
+        if self.ndim == 3:
+            # 3D: sample both u and v
+            key_u, key_v = jax.random.split(rng_key)
+            u = jax.random.randint(key_u, shape=(), minval=-d_max, maxval=d_max + 1)
+            v = jax.random.randint(key_v, shape=(), minval=-d_max, maxval=d_max + 1)
+            return DisplacementObservation(float(u), float(v))
+        else:
+            # 2D: sample only u
+            u = jax.random.randint(rng_key, shape=(), minval=-d_max, maxval=d_max + 1)
+            return DisplacementObservation(float(u), None)
     
     def get_displacement_pmf(self, position: GridPosition) -> np.ndarray:
         """Return uniform PMF over displacement space.
         
         Returns:
-            Array of shape (2*d_max+1, 2*d_max+1) with uniform probabilities.
+            - 3D: Array of shape (2*d_max+1, 2*d_max+1) with uniform probabilities
+            - 2D: Array of shape (2*d_max+1,) with uniform probabilities
         """
         size = 2 * self.config.d_max + 1
-        return np.ones((size, size), dtype=np.float32) / (size ** 2)
+        
+        if self.ndim == 3:
+            return np.ones((size, size), dtype=np.float32) / (size ** 2)
+        else:
+            return np.ones((size,), dtype=np.float32) / size
