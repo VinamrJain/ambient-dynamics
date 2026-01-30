@@ -6,7 +6,7 @@ from .field.abstract_field import AbstractField
 from .field.simple_field import SimpleField
 from .actor.abstract_actor import AbstractActor
 from .actor.grid_actor import GridActor
-from .rendering import Renderer, NavigationRenderer, NavigationRenderer2D, create_navigation_renderer
+from .rendering import Renderer, NavigationRenderer
 from .utils.types import (
     GridConfig,
     GridPosition,
@@ -32,8 +32,6 @@ __all__ = [
     # Rendering
     'Renderer',
     'NavigationRenderer',
-    'NavigationRenderer2D',
-    'create_navigation_renderer',
     # Types
     'GridConfig',
     'GridPosition',
