@@ -17,7 +17,10 @@ from ..utils.types import (
 class GridArena(AbstractArena):
     """Basic grid arena with configurable boundary handling.
     
-    Simulates an actor moving in a 3D grid under environmental field forces.
+    Supports both 2D and 3D settings:
+    - 3D: Actor controls z-axis, field controls (x, y)
+    - 2D: Actor controls y-axis, field controls (x,)
+    
     Supports different boundary conditions and serves as base for specific tasks.
     """
     
@@ -32,13 +35,13 @@ class GridArena(AbstractArena):
         """Initialize grid arena.
         
         Args:
-            field: Environmental field providing displacements.
-            actor: Actor with vertical dynamics.
+            field: Environmental field providing ambient displacements.
+            actor: Actor with controllable axis dynamics.
             config: Grid configuration.
             initial_position: Starting position for reset.
             boundary_mode: How to handle boundaries:
                 - 'clip': Clamp position to valid range (default)
-                - 'periodic': Wrap around (toroidal topology)
+                - 'periodic': Wrap around on ambient axes, clip on controllable
                 - 'terminal': Mark as terminal when crossing boundary
         """
         self.field = field
@@ -57,12 +60,24 @@ class GridArena(AbstractArena):
         # Arena state (updated in reset and step)
         self.position = initial_position
         self.last_position = initial_position
-        self.last_displacement = DisplacementObservation(0.0, 0.0)
+        self.last_displacement = self._zero_displacement()
         self.step_count = 0
         self._out_of_bounds = False
         self._rng = None
         self._last_action = None
         self._last_reward = 0.0
+    
+    @property
+    def ndim(self) -> int:
+        """Number of spatial dimensions."""
+        return self.config.ndim
+    
+    def _zero_displacement(self) -> DisplacementObservation:
+        """Create zero displacement appropriate for dimensionality."""
+        if self.ndim == 3:
+            return DisplacementObservation(0.0, 0.0)
+        else:
+            return DisplacementObservation(0.0, None)
     
     def reset(self, rng_key: jnp.ndarray) -> np.ndarray:
         """Reset arena to initial state."""
@@ -76,7 +91,7 @@ class GridArena(AbstractArena):
         # Reset state
         self.position = self.initial_position
         self.last_position = self.initial_position
-        self.last_displacement = DisplacementObservation(0.0, 0.0)
+        self.last_displacement = self._zero_displacement()
         self.step_count = 0
         self._out_of_bounds = False
         self._last_action = None
@@ -92,24 +107,27 @@ class GridArena(AbstractArena):
         # Split RNG keys for field and actor
         field_key, actor_key, self._rng = jax.random.split(self._rng, 3)
         
-        # 1. Sample horizontal displacement from field (continuous observation)
+        # 1. Sample ambient displacement from field (continuous)
         displacement_obs = self.field.sample_displacement(
             self.position, field_key
         )
         
-        # 2. Apply horizontal displacement (discrete state transition)
-        new_i = self.position.i + displacement_obs.u_int
-        new_j = self.position.j + displacement_obs.v_int
-        new_k = self.position.k
-        
+        # 2. Apply ambient displacement (discrete state transition)
         # Store last position before update
         self.last_position = self.position
         
-        # Update horizontal position (before boundary check)
-        self.position = GridPosition(new_i, new_j, new_k)
+        if self.ndim == 3:
+            # 3D: update (i, j) from field, keep k
+            new_i = self.position.i + displacement_obs.u_int
+            new_j = self.position.j + displacement_obs.v_int
+            self.position = GridPosition(new_i, new_j, self.position.k)
+        else:
+            # 2D: update (i,) from field, keep j
+            new_i = self.position.i + displacement_obs.u_int
+            self.position = GridPosition(new_i, self.position.j, None)
         
-        # 3. Apply vertical action
-        self.position = self.actor.step_vertical(self.position, action, actor_key)
+        # 3. Apply controllable action
+        self.position = self.actor.step_controllable(self.position, action, actor_key)
         
         # 4. Enforce boundaries
         self.position, self._out_of_bounds = self._enforce_boundaries(
@@ -166,7 +184,7 @@ class GridArena(AbstractArena):
             )
             self.position = self.initial_position
             self.last_position = self.initial_position
-            self.last_displacement = DisplacementObservation(0.0, 0.0)
+            self.last_displacement = self._zero_displacement()
             self._out_of_bounds = False
     
     def compute_reward(self) -> float:
@@ -181,28 +199,45 @@ class GridArena(AbstractArena):
     
     @property
     def observation_space(self) -> gym.Space:
-        """Observation space: [i, j, k, u_obs, v_obs]."""
-        return gym.spaces.Box(
-            low=np.array([
-                1, 1, 1,
-                -self.config.d_max, -self.config.d_max
-            ], dtype=np.float32),
-            high=np.array([
-                self.config.n_x, self.config.n_y, self.config.n_z,
-                self.config.d_max, self.config.d_max
-            ], dtype=np.float32),
-            dtype=np.float32
-        )
+        """Observation space based on dimensionality.
+        
+        - 3D: [i, j, k, u_obs, v_obs] (5 dimensions)
+        - 2D: [i, j, u_obs] (3 dimensions)
+        """
+        d_max = self.config.d_max
+        
+        if self.ndim == 3:
+            return gym.spaces.Box(
+                low=np.array([1, 1, 1, -d_max, -d_max], dtype=np.float32),
+                high=np.array([
+                    self.config.n_x, self.config.n_y, self.config.n_z,
+                    d_max, d_max
+                ], dtype=np.float32),
+                dtype=np.float32
+            )
+        else:
+            return gym.spaces.Box(
+                low=np.array([1, 1, -d_max], dtype=np.float32),
+                high=np.array([self.config.n_x, self.config.n_y, d_max], dtype=np.float32),
+                dtype=np.float32
+            )
     
     def _get_observation(self) -> np.ndarray:
         """Construct flat observation array."""
-        return np.array([
-            float(self.position.i),
-            float(self.position.j),
-            float(self.position.k),
-            self.last_displacement.u,
-            self.last_displacement.v
-        ], dtype=np.float32)
+        if self.ndim == 3:
+            return np.array([
+                float(self.position.i),
+                float(self.position.j),
+                float(self.position.k),
+                self.last_displacement.u,
+                self.last_displacement.v
+            ], dtype=np.float32)
+        else:
+            return np.array([
+                float(self.position.i),
+                float(self.position.j),
+                self.last_displacement.u
+            ], dtype=np.float32)
     
     def _enforce_boundaries(
         self, position: GridPosition
@@ -214,13 +249,22 @@ class GridArena(AbstractArena):
         """
         out_of_bounds = False
         
+        if self.ndim == 3:
+            return self._enforce_boundaries_3d(position)
+        else:
+            return self._enforce_boundaries_2d(position)
+    
+    def _enforce_boundaries_3d(
+        self, position: GridPosition
+    ) -> Tuple[GridPosition, bool]:
+        """Enforce boundaries for 3D setting."""
+        out_of_bounds = False
+        
         if self.boundary_mode == 'clip':
-            # Clamp to valid range
             new_i = int(max(1, min(position.i, self.config.n_x)))
             new_j = int(max(1, min(position.j, self.config.n_y)))
             new_k = int(max(1, min(position.k, self.config.n_z)))
             
-            # Check if clamping occurred
             out_of_bounds = (
                 new_i != position.i or 
                 new_j != position.j or 
@@ -229,20 +273,45 @@ class GridArena(AbstractArena):
             position = GridPosition(new_i, new_j, new_k)
             
         elif self.boundary_mode == 'periodic':
-            # Wrap around (toroidal in x-y, clip in z)
+            # Wrap around on ambient axes (i, j), clip on controllable (k)
             new_i = ((position.i - 1) % self.config.n_x) + 1
             new_j = ((position.j - 1) % self.config.n_y) + 1
             new_k = int(max(1, min(position.k, self.config.n_z)))
             position = GridPosition(new_i, new_j, new_k)
             
         elif self.boundary_mode == 'terminal':
-            # Check if outside bounds
             out_of_bounds = (
                 position.i < 1 or position.i > self.config.n_x or
                 position.j < 1 or position.j > self.config.n_y or
                 position.k < 1 or position.k > self.config.n_z
             )
-            # Don't modify position - arena will terminate
+        
+        return position, out_of_bounds
+    
+    def _enforce_boundaries_2d(
+        self, position: GridPosition
+    ) -> Tuple[GridPosition, bool]:
+        """Enforce boundaries for 2D setting."""
+        out_of_bounds = False
+        
+        if self.boundary_mode == 'clip':
+            new_i = int(max(1, min(position.i, self.config.n_x)))
+            new_j = int(max(1, min(position.j, self.config.n_y)))
+            
+            out_of_bounds = (new_i != position.i or new_j != position.j)
+            position = GridPosition(new_i, new_j, None)
+            
+        elif self.boundary_mode == 'periodic':
+            # Wrap around on ambient axis (i), clip on controllable (j)
+            new_i = ((position.i - 1) % self.config.n_x) + 1
+            new_j = int(max(1, min(position.j, self.config.n_y)))
+            position = GridPosition(new_i, new_j, None)
+            
+        elif self.boundary_mode == 'terminal':
+            out_of_bounds = (
+                position.i < 1 or position.i > self.config.n_x or
+                position.j < 1 or position.j > self.config.n_y
+            )
         
         return position, out_of_bounds
 
