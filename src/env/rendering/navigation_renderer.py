@@ -321,6 +321,34 @@ class NavigationRenderer(Renderer):
     
     def _add_grid_points(self, fig: go.Figure):
         """Add subsampled grid points."""
+        fig.add_trace(self._get_grid_points_trace())
+    
+    def _add_target_vicinity(self, fig: go.Figure, state: NavigationArenaState):
+        """Add target vicinity region (cylinder for 3D, circle for 2D)."""
+        fig.add_trace(self._get_target_vicinity_trace(state))
+    
+    def _add_target(self, fig: go.Figure, state: NavigationArenaState):
+        """Add target marker."""
+        fig.add_trace(self._get_target_trace(state))
+    
+    def _add_initial_position(self, fig: go.Figure, state: NavigationArenaState):
+        """Add initial position marker."""
+        fig.add_trace(self._get_initial_position_trace(state))
+    
+    def _add_trajectory(self, fig: go.Figure):
+        """Add trajectory line."""
+        fig.add_trace(self._get_trajectory_trace())
+    
+    def _add_actor(self, fig: go.Figure, state: NavigationArenaState):
+        """Add current actor position."""
+        fig.add_trace(self._get_actor_trace(state))
+    
+    # ========================================================================
+    # Trace data methods (for use by exporters)
+    # ========================================================================
+    
+    def _get_grid_points_trace(self):
+        """Get grid points as Plotly trace."""
         i_range = range(1, self.config.n_x + 1, self.grid_subsample)
         j_range = range(1, self.config.n_y + 1, self.grid_subsample)
         
@@ -334,14 +362,14 @@ class NavigationRenderer(Renderer):
                         j_coords.append(j)
                         k_coords.append(k)
             
-            fig.add_trace(go.Scatter3d(
+            return go.Scatter3d(
                 x=i_coords, y=j_coords, z=k_coords,
                 mode='markers',
                 marker=dict(size=self.grid_point_size, color='gray', opacity=0.4),
                 name='Grid',
                 showlegend=False,
                 hoverinfo='skip'
-            ))
+            )
         else:
             i_coords, j_coords = [], []
             for i in i_range:
@@ -349,26 +377,25 @@ class NavigationRenderer(Renderer):
                     i_coords.append(i)
                     j_coords.append(j)
             
-            fig.add_trace(go.Scatter(
+            return go.Scatter(
                 x=i_coords, y=j_coords,
                 mode='markers',
                 marker=dict(size=self.grid_point_size, color='gray', opacity=0.4),
                 name='Grid',
                 showlegend=False,
                 hoverinfo='skip'
-            ))
+            )
     
-    def _add_target_vicinity(self, fig: go.Figure, state: NavigationArenaState):
-        """Add target vicinity region (cylinder for 3D, circle for 2D)."""
+    def _get_target_vicinity_trace(self, state: NavigationArenaState):
+        """Get target vicinity region as Plotly trace."""
         if self.ndim == 3:
-            # 3D: Cylinder
             theta = np.linspace(0, 2 * np.pi, 40)
             z_levels = np.linspace(1, self.config.n_z, 30)
             theta_grid, z_grid = np.meshgrid(theta, z_levels)
             x_cylinder = state.target_position.i + state.vicinity_radius * np.cos(theta_grid)
             y_cylinder = state.target_position.j + state.vicinity_radius * np.sin(theta_grid)
             
-            fig.add_trace(go.Surface(
+            return go.Surface(
                 x=x_cylinder, y=y_cylinder, z=z_grid,
                 colorscale=[[0, 'lightgreen'], [1, 'lightgreen']],
                 opacity=0.25,
@@ -376,14 +403,13 @@ class NavigationRenderer(Renderer):
                 showlegend=False,
                 hoverinfo='skip',
                 name='Vicinity'
-            ))
+            )
         else:
-            # 2D: Circle
             theta = np.linspace(0, 2 * np.pi, 60)
             x_circle = state.target_position.i + state.vicinity_radius * np.cos(theta)
             y_circle = state.target_position.j + state.vicinity_radius * np.sin(theta)
             
-            fig.add_trace(go.Scatter(
+            return go.Scatter(
                 x=x_circle, y=y_circle,
                 mode='lines',
                 fill='toself',
@@ -392,12 +418,12 @@ class NavigationRenderer(Renderer):
                 name='Vicinity',
                 showlegend=False,
                 hoverinfo='skip'
-            ))
+            )
     
-    def _add_target(self, fig: go.Figure, state: NavigationArenaState):
-        """Add target marker."""
+    def _get_target_trace(self, state: NavigationArenaState):
+        """Get target marker as Plotly trace."""
         if self.ndim == 3:
-            fig.add_trace(go.Scatter3d(
+            return go.Scatter3d(
                 x=[state.target_position.i],
                 y=[state.target_position.j],
                 z=[state.target_position.k],
@@ -410,9 +436,9 @@ class NavigationRenderer(Renderer):
                 ),
                 name='Target',
                 showlegend=True
-            ))
+            )
         else:
-            fig.add_trace(go.Scatter(
+            return go.Scatter(
                 x=[state.target_position.i],
                 y=[state.target_position.j],
                 mode='markers',
@@ -424,12 +450,12 @@ class NavigationRenderer(Renderer):
                 ),
                 name='Target',
                 showlegend=True
-            ))
+            )
     
-    def _add_initial_position(self, fig: go.Figure, state: NavigationArenaState):
-        """Add initial position marker."""
+    def _get_initial_position_trace(self, state: NavigationArenaState):
+        """Get initial position marker as Plotly trace."""
         if self.ndim == 3:
-            fig.add_trace(go.Scatter3d(
+            return go.Scatter3d(
                 x=[state.initial_position.i],
                 y=[state.initial_position.j],
                 z=[state.initial_position.k],
@@ -443,9 +469,9 @@ class NavigationRenderer(Renderer):
                 ),
                 name='Start',
                 showlegend=True
-            ))
+            )
         else:
-            fig.add_trace(go.Scatter(
+            return go.Scatter(
                 x=[state.initial_position.i],
                 y=[state.initial_position.j],
                 mode='markers',
@@ -458,15 +484,22 @@ class NavigationRenderer(Renderer):
                 ),
                 name='Start',
                 showlegend=True
-            ))
+            )
     
-    def _add_trajectory(self, fig: go.Figure):
-        """Add trajectory line."""
-        positions = [s.position for s in self.states]
+    def _get_trajectory_trace(self, up_to_idx: int = None):
+        """Get trajectory as Plotly trace.
+        
+        Args:
+            up_to_idx: If provided, only include states up to this index.
+        """
+        if up_to_idx is not None:
+            positions = [s.position for s in self.states[:up_to_idx + 1]]
+        else:
+            positions = [s.position for s in self.states]
         
         if self.ndim == 3:
             traj_array = np.array([[p.i, p.j, p.k] for p in positions])
-            fig.add_trace(go.Scatter3d(
+            return go.Scatter3d(
                 x=traj_array[:, 0],
                 y=traj_array[:, 1],
                 z=traj_array[:, 2],
@@ -476,10 +509,10 @@ class NavigationRenderer(Renderer):
                 name='Trajectory',
                 showlegend=True,
                 opacity=0.8
-            ))
+            )
         else:
             traj_array = np.array([[p.i, p.j] for p in positions])
-            fig.add_trace(go.Scatter(
+            return go.Scatter(
                 x=traj_array[:, 0],
                 y=traj_array[:, 1],
                 mode='lines+markers',
@@ -488,14 +521,14 @@ class NavigationRenderer(Renderer):
                 name='Trajectory',
                 showlegend=True,
                 opacity=0.8
-            ))
+            )
     
-    def _add_actor(self, fig: go.Figure, state: NavigationArenaState):
-        """Add current actor position."""
+    def _get_actor_trace(self, state: NavigationArenaState):
+        """Get actor marker as Plotly trace."""
         pos = state.position
         
         if self.ndim == 3:
-            fig.add_trace(go.Scatter3d(
+            return go.Scatter3d(
                 x=[pos.i],
                 y=[pos.j],
                 z=[pos.k],
@@ -508,9 +541,9 @@ class NavigationRenderer(Renderer):
                 ),
                 name='Actor',
                 showlegend=True
-            ))
+            )
         else:
-            fig.add_trace(go.Scatter(
+            return go.Scatter(
                 x=[pos.i],
                 y=[pos.j],
                 mode='markers',
@@ -522,4 +555,72 @@ class NavigationRenderer(Renderer):
                 ),
                 name='Actor',
                 showlegend=True
-            ))
+            )
+    
+    def _get_animated_layout(self) -> go.Layout:
+        """Get layout for animated figure (used by html exporter)."""
+        if self.ndim == 3:
+            camera = dict(
+                eye=self.camera_eye,
+                center=dict(x=0, y=0, z=0),
+                up=dict(x=0, y=0, z=1)
+            )
+            
+            return go.Layout(
+                scene=dict(
+                    xaxis=dict(
+                        title=dict(text='X (ambient)', font=dict(size=14)),
+                        tickfont=dict(size=11),
+                        range=[0.5, self.config.n_x + 0.5]
+                    ),
+                    yaxis=dict(
+                        title=dict(text='Y (ambient)', font=dict(size=14)),
+                        tickfont=dict(size=11),
+                        range=[0.5, self.config.n_y + 0.5]
+                    ),
+                    zaxis=dict(
+                        title=dict(text='Z (controllable)', font=dict(size=14)),
+                        tickfont=dict(size=11),
+                        range=[0.5, self.config.n_z + 0.5]
+                    ),
+                    aspectmode='data',
+                    camera=camera
+                ),
+                width=self.width,
+                height=self.height + 100,
+                showlegend=True,
+                legend=dict(
+                    x=0.01, y=0.99, 
+                    font=dict(size=12),
+                    bgcolor='rgba(255, 255, 255, 0.8)',
+                    bordercolor='gray',
+                    borderwidth=1
+                ),
+                margin=dict(l=10, r=10, t=60, b=80)
+            )
+        else:
+            return go.Layout(
+                xaxis=dict(
+                    title=dict(text='X (ambient)', font=dict(size=14)),
+                    tickfont=dict(size=11),
+                    range=[0.5, self.config.n_x + 0.5],
+                    scaleanchor='y',
+                    scaleratio=1
+                ),
+                yaxis=dict(
+                    title=dict(text='Y (controllable)', font=dict(size=14)),
+                    tickfont=dict(size=11),
+                    range=[0.5, self.config.n_y + 0.5]
+                ),
+                width=self.width,
+                height=self.height + 100,
+                showlegend=True,
+                legend=dict(
+                    x=0.01, y=0.99, 
+                    font=dict(size=11),
+                    bgcolor='rgba(255, 255, 255, 0.8)',
+                    bordercolor='gray',
+                    borderwidth=1
+                ),
+                margin=dict(l=60, r=20, t=60, b=80)
+            )
