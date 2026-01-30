@@ -28,7 +28,7 @@ def save_html(
         >>> renderer.save_html('episode_static.html')
     """
     if not renderer.states:
-        print("⚠️  No states recorded. Run episode first.")
+        print("WARNING: No states recorded. Run episode first.")
         return
     
     print(f"Exporting static HTML...")
@@ -42,7 +42,7 @@ def save_html(
     # Save
     fig.write_html(output_path)
     
-    print(f"✅ Static HTML saved to: {output_path}")
+    print(f"Static HTML saved to: {output_path}")
     print(f"   File size: {os.path.getsize(output_path) / 1024:.1f} KB")
     print(f"   Features: 3D interactive (rotate, zoom, pan)")
 
@@ -72,7 +72,7 @@ def save_animated_html(
         >>> renderer.save_animated_html('episode_animated.html', fps=10)
     """
     if not renderer.states:
-        print("⚠️  No states recorded. Run episode first.")
+        print("WARNING: No states recorded. Run episode first.")
         return
     
     print(f"Creating animated HTML with {len(renderer.states)} frames...")
@@ -138,7 +138,7 @@ def save_animated_html(
                 yanchor='bottom',
                 buttons=[
                     dict(
-                        label='▶ Play',
+                        label='Play',
                         method='animate',
                         args=[None, {
                             'frame': {'duration': frame_duration, 'redraw': True},
@@ -148,7 +148,7 @@ def save_animated_html(
                         }]
                     ),
                     dict(
-                        label='⏸ Pause',
+                        label='Pause',
                         method='animate',
                         args=[[None], {
                             'frame': {'duration': 0, 'redraw': False},
@@ -193,7 +193,7 @@ def save_animated_html(
     # Save to file
     fig.write_html(output_path)
     
-    print(f"✅ Animated HTML saved to: {output_path}")
+    print(f"Animated HTML saved to: {output_path}")
     print(f"   Frames: {len(frames)}")
     print(f"   File size: {os.path.getsize(output_path) / 1024:.1f} KB")
     print(f"   Features: Play/Pause, Scrubber, Full 3D controls")
