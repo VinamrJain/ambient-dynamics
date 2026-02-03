@@ -9,3 +9,7 @@ __pycache__
 
 output/
 .cursor/
+
+.html
+.gif
+.mp4
