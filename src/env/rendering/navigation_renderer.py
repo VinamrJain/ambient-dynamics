@@ -2,10 +2,16 @@ from typing import List, Union, Optional, TYPE_CHECKING
 import numpy as np
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
-from io import BytesIO
-from PIL import Image
 
 from .renderer import Renderer
+from .rendering_utils import (
+    compute_scaling,
+    get_layout_config_2d,
+    get_layout_config_3d,
+    get_animated_layout_2d,
+    get_animated_layout_3d,
+    fig_to_array,
+)
 from ..utils.types import GridConfig, NavigationArenaState, GridPosition
 
 if TYPE_CHECKING:
@@ -121,7 +127,7 @@ class NavigationRenderer(Renderer):
             fig.show()
             return None
         elif mode == 'rgb_array':
-            return self._fig_to_array(fig)
+            return fig_to_array(fig, self.width, self.height)
 
     @property
     def render_modes(self) -> List[str]:
@@ -191,130 +197,22 @@ class NavigationRenderer(Renderer):
         )
         
         if self.ndim == 3:
-            self._configure_layout_3d(fig, title_text)
+            layout_config = get_layout_config_3d(
+                self.config, title_text, self.width, self.height, self.camera_eye
+            )
         else:
-            self._configure_layout_2d(fig, title_text)
-    
-    def _configure_layout_3d(self, fig: go.Figure, title_text: str):
-        """Configure 3D layout."""
-        camera = dict(
-            eye=self.camera_eye,  # Camera position
-            center=dict(x=0, y=0, z=0),  # Look at center
-            up=dict(x=0, y=0, z=1)  # Z-axis is up
-        )
-        
-        fig.update_layout(
-            title=dict(
-                text=title_text, 
-                font=dict(size=22),
-                x=0.5,  # Center title
-                xanchor='center',
-                y=0.98,  # Near top
-                yanchor='top'
-            ),
-            scene=dict(
-                xaxis=dict(
-                    title=dict(text='X (i)', font=dict(size=20)),
-                    tickfont=dict(size=14),
-                    range=[0.5, self.config.n_x + 0.5]
-                ),
-                yaxis=dict(
-                    title=dict(text='Y (ambient)', font=dict(size=20)),
-                    tickfont=dict(size=14),
-                    range=[0.5, self.config.n_y + 0.5]
-                ),
-                zaxis=dict(
-                    title=dict(text='Z (controllable)', font=dict(size=20)),
-                    tickfont=dict(size=14),
-                    range=[0.5, self.config.n_z + 0.5]
-                ),
-                aspectmode='data',
-                camera=camera
-            ),
-            width=self.width,
-            height=self.height,
-            showlegend=True,
-            legend=dict(
-                x=0.01, y=0.99, 
-                font=dict(size=12),
-                bgcolor='rgba(255, 255, 255, 0.8)',  # Semi-transparent background
-                bordercolor='gray',
-                borderwidth=1
-            ),
-            # Adjust margins to prevent clipping
-            margin=dict(l=10, r=10, t=60, b=10)  # Increased top margin for title
-        )
-    
-    def _configure_layout_2d(self, fig: go.Figure, title_text: str):
-        """Configure 2D layout."""
-        fig.update_layout(
-            title=dict(
-                text=title_text, 
-                font=dict(size=18),
-                x=0.5,
-                xanchor='center',
-                y=0.98,
-                yanchor='top'
-            ),
-            xaxis=dict(
-                title=dict(text='X (ambient)', font=dict(size=16)),
-                tickfont=dict(size=12),
-                range=[0.5, self.config.n_x + 0.5],
-                scaleanchor='y',
-                scaleratio=1
-            ),
-            yaxis=dict(
-                title=dict(text='Y (controllable)', font=dict(size=16)),
-                tickfont=dict(size=12),
-                range=[0.5, self.config.n_y + 0.5]
-            ),
-            width=self.width,
-            height=self.height,
-            showlegend=True,
-            legend=dict(
-                x=0.01, y=0.99, 
-                font=dict(size=11),
-                bgcolor='rgba(255, 255, 255, 0.8)',
-                bordercolor='gray',
-                borderwidth=1
-            ),
-            margin=dict(l=60, r=20, t=60, b=60)
-        )
-    
-    def _fig_to_array(self, fig: go.Figure) -> np.ndarray:
-        """Convert Plotly figure to numpy array."""
-        try:
-            # Try using kaleido (preferred)
-            img_bytes = fig.to_image(format='png', width=self.width, height=self.height)
-            
-            # Load with PIL and convert to numpy
-            img = Image.open(BytesIO(img_bytes))
-            img_array = np.array(img)
-            
-            # Ensure RGB (remove alpha if present)
-            if img_array.shape[2] == 4:
-                img_array = img_array[:, :, :3]
-            
-            return img_array
-        
-        except ValueError as e:
-            if 'kaleido' in str(e).lower():
-                print("ERROR: rgb_array mode requires 'kaleido' package.")
-                print("   Install with: pip install kaleido")
-            else:
-                raise
+            layout_config = get_layout_config_2d(
+                self.config, title_text, self.width, self.height
+            )
+        fig.update_layout(**layout_config)
     
     def _compute_scaling(self):
         """Compute marker sizes based on grid dimensions."""
-        if self.ndim == 3:
-            max_dim = max(self.config.n_x, self.config.n_y, self.config.n_z)
-        else:
-            max_dim = max(self.config.n_x, self.config.n_y)
-        
-        self.grid_point_size = max(2, 60 / max_dim)
-        self.actor_size = max(10, 200 / max_dim)
-        self.target_size = max(8, 150 / max_dim)
-        self.trajectory_width = max(2, 25 / max_dim)
+        scaling = compute_scaling(self.config)
+        self.grid_point_size = scaling['grid_point_size']
+        self.actor_size = scaling['actor_size']
+        self.target_size = scaling['target_size']
+        self.trajectory_width = scaling['trajectory_width']
     
     # ========================================================================
     # Visualization elements (dimension-aware)
@@ -680,67 +578,8 @@ class NavigationRenderer(Renderer):
     def _get_animated_layout(self) -> go.Layout:
         """Get layout for animated figure (used by html exporter)."""
         if self.ndim == 3:
-            camera = dict(
-                eye=self.camera_eye,
-                center=dict(x=0, y=0, z=0),
-                up=dict(x=0, y=0, z=1)
-            )
-            
-            return go.Layout(
-                scene=dict(
-                    xaxis=dict(
-                        title=dict(text='X (ambient)', font=dict(size=14)),
-                        tickfont=dict(size=11),
-                        range=[0.5, self.config.n_x + 0.5]
-                    ),
-                    yaxis=dict(
-                        title=dict(text='Y (ambient)', font=dict(size=14)),
-                        tickfont=dict(size=11),
-                        range=[0.5, self.config.n_y + 0.5]
-                    ),
-                    zaxis=dict(
-                        title=dict(text='Z (controllable)', font=dict(size=14)),
-                        tickfont=dict(size=11),
-                        range=[0.5, self.config.n_z + 0.5]
-                    ),
-                    aspectmode='data',
-                    camera=camera
-                ),
-                width=self.width,
-                height=self.height + 100,
-                showlegend=True,
-                legend=dict(
-                    x=0.01, y=0.99, 
-                    font=dict(size=12),
-                    bgcolor='rgba(255, 255, 255, 0.8)',
-                    bordercolor='gray',
-                    borderwidth=1
-                ),
-                margin=dict(l=10, r=10, t=60, b=80)
+            return get_animated_layout_3d(
+                self.config, self.width, self.height, self.camera_eye
             )
         else:
-            return go.Layout(
-                xaxis=dict(
-                    title=dict(text='X (ambient)', font=dict(size=14)),
-                    tickfont=dict(size=11),
-                    range=[0.5, self.config.n_x + 0.5],
-                    scaleanchor='y',
-                    scaleratio=1
-                ),
-                yaxis=dict(
-                    title=dict(text='Y (controllable)', font=dict(size=14)),
-                    tickfont=dict(size=11),
-                    range=[0.5, self.config.n_y + 0.5]
-                ),
-                width=self.width,
-                height=self.height + 100,
-                showlegend=True,
-                legend=dict(
-                    x=0.01, y=0.99, 
-                    font=dict(size=11),
-                    bgcolor='rgba(255, 255, 255, 0.8)',
-                    bordercolor='gray',
-                    borderwidth=1
-                ),
-                margin=dict(l=60, r=20, t=60, b=80)
-            )
+            return get_animated_layout_2d(self.config, self.width, self.height)
