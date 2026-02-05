@@ -9,9 +9,11 @@ from ..utils.types import (
     GridPosition, GridConfig, ArenaState, GridArenaState, NavigationArenaState
 )
 
-
+#TODO: Experiment with different reward structures and termination conditions.
 class NavigationArena(GridArena):
     """Arena for navigation and station-keeping tasks.
+    
+    Supports both 2D and 3D settings (inherits from GridArena).
     
     Reward structure:
     - Inside vicinity: Continuous vicinity_bonus (station-keeping reward)
@@ -45,8 +47,8 @@ class NavigationArena(GridArena):
         """Initialize navigation arena.
         
         Args:
-            field: Environmental field.
-            actor: Actor with vertical dynamics.
+            field: Environmental field providing ambient displacements.
+            actor: Actor with controllable axis dynamics.
             config: Grid configuration.
             initial_position: Starting position.
             target_position: Goal position to reach.
@@ -87,15 +89,25 @@ class NavigationArena(GridArena):
         self._cumulative_reward = 0.0
         return obs
     
+    def _compute_distance(self, pos1: GridPosition, pos2: GridPosition) -> float:
+        """Compute Euclidean distance between two positions (handles 2D and 3D)."""
+        if self.ndim == 3:
+            return np.sqrt(
+                (pos1.i - pos2.i) ** 2 +
+                (pos1.j - pos2.j) ** 2 +
+                (pos1.k - pos2.k) ** 2
+            )
+        else:
+            return np.sqrt(
+                (pos1.i - pos2.i) ** 2 +
+                (pos1.j - pos2.j) ** 2
+            )
+    
     def compute_reward(self) -> float:
-        """Compute reward for station-keeping and navigation.
-        """
+        """Compute reward for station-keeping and navigation."""
         # Calculate Euclidean distance to target
-        distance_to_target = np.sqrt(
-            (self.position.i - self.target_position.i) ** 2 +
-            (self.position.j - self.target_position.j) ** 2 +
-            (self.position.k - self.target_position.k) ** 2
-        )
+        distance_to_target = self._compute_distance(self.position, self.target_position)
+        
         # Check if in target vicinity
         in_vicinity = distance_to_target <= self.vicinity_radius
         

@@ -1,4 +1,4 @@
-"""Abstract actor interface for vertical dynamics."""
+"""Abstract actor interface for controllable axis dynamics."""
 
 from abc import ABC, abstractmethod
 import numpy as np
@@ -8,10 +8,11 @@ from ..utils.types import GridPosition
 
 
 class AbstractActor(ABC):
-    """Abstract base class for actors with vertical dynamics.
+    """Abstract base class for actors with controllable axis dynamics.
     
-    Actors control vertical (altitude) movement. Horizontal movement is
-    determined by the field. Boundary enforcement is handled by the arena.
+    Actors control movement on the controllable axis (z for 3D, y for 2D).
+    Movement on ambient axes is determined by the field.
+    Boundary enforcement is handled by the arena.
     """
     
     def __init__(self):
@@ -19,40 +20,40 @@ class AbstractActor(ABC):
         pass
     
     @abstractmethod
-    def step_vertical(
+    def step_controllable(
         self, position: GridPosition, action: int, rng_key: jnp.ndarray
     ) -> GridPosition:
-        """Apply vertical action to position (functional/stateless).
+        """Apply action on controllable axis (functional/stateless).
         
         Args:
             position: Current position.
-            action: Vertical action (0=down, 1=stay, 2=up).
+            action: Controllable axis action (0=decrease, 1=stay, 2=increase).
             rng_key: JAX PRNG key for stochastic dynamics.
             
         Returns:
-            New position after vertical action (may be outside bounds).
+            New position after action (may be outside bounds).
         """
         pass
     
     # Optional method for analysis
-    def get_vertical_displacement_pmf(self) -> np.ndarray:
-        """Get full PMF over vertical displacements for all actions.
+    def get_controllable_displacement_pmf(self) -> np.ndarray:
+        """Get full PMF over controllable axis displacements for all actions.
         
         Returns:
-            PMF array of shape (3, 2*z_max+1) where entry [a, j] is:
-                P(z_displacement = j - z_max | action = a)
+            PMF array of shape (3, 2*c_max+1) where entry [a, j] is:
+                P(controllable_displacement = j - c_max | action = a)
             
             where:
-                - a ∈ {0, 1, 2} is action index (0=down, 1=stay, 2=up)
-                - j ∈ {0, ..., 2*z_max} is displacement index
-                - z_max is the maximum vertical displacement magnitude
+                - a ∈ {0, 1, 2} is action index (0=decrease, 1=stay, 2=increase)
+                - j ∈ {0, ..., 2*c_max} is displacement index
+                - c_max is the maximum controllable displacement magnitude
             
-            Example for z_max=2:
+            Example for c_max=2:
                 - Shape: (3, 5) for displacements {-2, -1, 0, +1, +2}
-                - pmf[0, 0] = P(z=-2 | action=0=down)
-                - pmf[1, 2] = P(z=0 | action=1=stay)
-                - pmf[2, 4] = P(z=+2 | action=2=up)
+                - pmf[0, 0] = P(d=-2 | action=0=decrease)
+                - pmf[1, 2] = P(d=0 | action=1=stay)
+                - pmf[2, 4] = P(d=+2 | action=2=increase)
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__} does not support vertical displacement PMF analysis."
+            f"{self.__class__.__name__} does not support controllable displacement PMF analysis."
         )

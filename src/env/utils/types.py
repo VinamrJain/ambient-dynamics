@@ -1,4 +1,13 @@
-"""Type definitions for the grid environment."""
+"""Type definitions for the grid environment.
+
+Supports both 2D and 3D settings:
+- 3D: Agent controls z-axis (vertical), field controls x-y plane (ambient)
+- 2D: Agent controls y-axis (controllable), field controls x-axis (ambient)
+
+Terminology:
+- Ambient axes: Controlled by the environmental field (1 axis for 2D, 2 for 3D)
+- Controllable axis: Controlled by the agent's actions (always 1 axis)
+"""
 
 from typing import NamedTuple, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
@@ -6,52 +15,154 @@ import numpy as np
 import jax.numpy as jnp
 from dataclasses import asdict
 
+
 class GridPosition(NamedTuple):
-    """3D grid position coordinates (1-indexed)."""
-    i: int  # x-coordinate [1, n_x]
-    j: int  # y-coordinate [1, n_y]
-    k: int  # z-coordinate (altitude) [1, n_z]
+    """Grid position coordinates (1-indexed).
+    
+    Supports both 2D and 3D settings:
+    - 3D: (i, j, k) where k is controllable axis, (i, j) are ambient
+    - 2D: (i, j, None) where j is controllable axis, (i,) is ambient
+    
+    Args:
+        i: First ambient axis coordinate [1, n_x]
+        j: Second ambient (3D) or controllable (2D) axis [1, n_y]
+        k: Controllable axis for 3D [1, n_z], None for 2D
+    """
+    i: int  # Ambient axis 1 (always present)
+    j: int  # Ambient axis 2 (3D) OR controllable axis (2D)
+    k: Optional[int] = None  # Controllable axis (3D only)
+    
+    @property
+    def ndim(self) -> int:
+        """Number of spatial dimensions."""
+        return 3 if self.k is not None else 2
+    
+    @property
+    def controllable(self) -> int:
+        """Position on controllable axis (agent-controlled)."""
+        return self.k if self.k is not None else self.j
+    
+    @property
+    def ambient(self) -> Tuple[int, ...]:
+        """Position on ambient axes (field-controlled)."""
+        return (self.i, self.j) if self.k is not None else (self.i,)
 
 
 class DisplacementObservation(NamedTuple):
-    """Observed displacement (can be continuous or discrete).
+    """Observed displacement on ambient axes (field-controlled).
+    
+    Supports both 2D and 3D settings:
+    - 3D: (u, v) displacement in x-y plane
+    - 2D: (u, None) displacement in x direction only
     
     Following BLE's units.py pattern: stores continuous values but provides
     integer properties for discrete state transitions.
     
-    For continuous variant: u, v are floats from underlying field.
-    For discrete variant: u, v are integers cast to float.
+    Args:
+        u: Displacement on ambient axis 1 (always present)
+        v: Displacement on ambient axis 2 (3D only, None for 2D)
     """
-    u: float  # x-displacement (continuous observation)
-    v: float  # y-displacement (continuous observation)
+    u: float  # Ambient axis 1 displacement
+    v: Optional[float] = None  # Ambient axis 2 displacement (3D only)
+    
+    @property
+    def ndim(self) -> int:
+        """Number of ambient dimensions."""
+        return 2 if self.v is not None else 1
+    
+    @property
+    def as_tuple(self) -> Tuple[float, ...]:
+        """Displacement as tuple (handles both 2D and 3D)."""
+        return (self.u, self.v) if self.v is not None else (self.u,)
+    
+    @property
+    def as_int_tuple(self) -> Tuple[int, ...]:
+        """Discrete displacement as tuple."""
+        return (self.u_int, self.v_int) if self.v is not None else (self.u_int,)
     
     @property
     def u_int(self) -> int:
-        """Get discrete x-displacement by rounding."""
+        """Get discrete displacement on ambient axis 1."""
         return int(round(self.u))
     
     @property
-    def v_int(self) -> int:
-        """Get discrete y-displacement by rounding."""
-        return int(round(self.v))
+    def v_int(self) -> Optional[int]:
+        """Get discrete displacement on ambient axis 2 (None for 2D)."""
+        return int(round(self.v)) if self.v is not None else None
 
 
 class GridConfig(NamedTuple):
-    """Grid environment configuration."""
-    n_x: int  # Grid size in x dimension
-    n_y: int  # Grid size in y dimension
-    n_z: int  # Grid size in z dimension (altitude levels)
-    d_max: int  # Maximum displacement magnitude in each direction
+    """Grid environment configuration.
+    
+    Supports both 2D and 3D settings:
+    - 3D: n_z is set, agent controls z, field controls (x, y)
+    - 2D: n_z is None, agent controls y, field controls (x,)
+    
+    Args:
+        n_x: Grid size on ambient axis 1 (always present)
+        n_y: Grid size on ambient axis 2 (3D) or controllable axis (2D)
+        n_z: Grid size on controllable axis (3D only, None for 2D)
+        d_max: Maximum displacement magnitude on ambient axes
+    """
+    n_x: int  # Ambient axis 1 size
+    n_y: int  # Ambient axis 2 (3D) or controllable axis (2D)
+    n_z: Optional[int]  # Controllable axis size (3D only, None for 2D)
+    d_max: int  # Maximum ambient displacement magnitude
+    
+    @property
+    def ndim(self) -> int:
+        """Number of spatial dimensions."""
+        return 3 if self.n_z is not None else 2
+    
+    @property
+    def n_controllable(self) -> int:
+        """Size of controllable axis."""
+        return self.n_z if self.n_z is not None else self.n_y
+    
+    @property
+    def n_ambient(self) -> Tuple[int, ...]:
+        """Sizes of ambient axes."""
+        return (self.n_x, self.n_y) if self.n_z is not None else (self.n_x,)
+    
+    @property
+    def shape(self) -> Tuple[int, ...]:
+        """Full grid shape."""
+        if self.n_z is not None:
+            return (self.n_x, self.n_y, self.n_z)
+        else:
+            return (self.n_x, self.n_y)
 
     @classmethod
-    def create(cls, n_x: int, n_y: int, n_z: int, d_max: int) -> 'GridConfig':
-        """Create GridConfig with validation."""
-        if n_x <= 0 or n_y <= 0 or n_z <= 0:
+    def create(cls, n_x: int, n_y: int, d_max: int, n_z: Optional[int] = None) -> 'GridConfig':
+        """Create GridConfig with validation.
+        
+        Args:
+            n_x: Ambient axis 1 size
+            n_y: Ambient axis 2 (3D) or controllable axis (2D)
+            d_max: Maximum displacement magnitude
+            n_z: Controllable axis size for 3D (None for 2D)
+        
+        Returns:
+            Validated GridConfig instance
+        """
+        # Validate dimensions
+        if n_x <= 0 or n_y <= 0:
             raise ValueError("Grid dimensions must be positive integers")
+        if n_z is not None and n_z <= 0:
+            raise ValueError("n_z must be positive if provided")
         if d_max < 0:
             raise ValueError("Maximum displacement must be non-negative")
-        if d_max >= min(n_x, n_y):
-            raise ValueError("Maximum displacement should be smaller than grid dimensions")
+        
+        # Validate d_max against ambient dimensions
+        if n_z is not None:
+            # 3D: ambient is (n_x, n_y)
+            if d_max >= min(n_x, n_y):
+                raise ValueError("Maximum displacement should be smaller than ambient dimensions")
+        else:
+            # 2D: ambient is (n_x,)
+            if d_max >= n_x:
+                raise ValueError("Maximum displacement should be smaller than ambient dimension")
+        
         return cls(n_x, n_y, n_z, d_max)
 
 
