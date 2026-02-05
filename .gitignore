@@ -13,3 +13,5 @@ output/
 .html
 .gif
 .mp4
+
+.pytest_cache/
