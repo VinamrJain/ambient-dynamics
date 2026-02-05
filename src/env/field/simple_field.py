@@ -3,7 +3,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from typing import Optional
+from typing import Optional, Tuple
 
 from .abstract_field import AbstractField
 from ..utils.types import GridPosition, DisplacementObservation, GridConfig
@@ -77,3 +77,20 @@ class SimpleField(AbstractField):
             return np.ones((size, size), dtype=np.float32) / (size ** 2)
         else:
             return np.ones((size,), dtype=np.float32) / size
+    
+    def get_mean_displacement(self, position: GridPosition) -> Tuple[float, ...]:
+        """Return mean displacement (zero for uniform distribution).
+        
+        For uniform distribution over {-d_max, ..., +d_max}, mean is 0.
+        
+        Args:
+            position: Grid position (unused - field is spatially uniform).
+            
+        Returns:
+            - 3D: (0.0, 0.0) tuple
+            - 2D: (0.0,) tuple
+        """
+        if self.ndim == 3:
+            return (0.0, 0.0)
+        else:
+            return (0.0,)
