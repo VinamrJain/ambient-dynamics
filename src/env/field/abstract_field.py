@@ -1,7 +1,7 @@
 """Abstract field interface for environmental dynamics on ambient axes."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Tuple
 import numpy as np
 import jax.numpy as jnp
 
@@ -67,6 +67,19 @@ class AbstractField(ABC):
             PMF array or None if not available.
             - 3D: shape (2*d_max+1, 2*d_max+1), entry [i,j] = P(u=i-d_max, v=j-d_max)
             - 2D: shape (2*d_max+1,), entry [i] = P(u=i-d_max)
+        """
+        return None
+    
+    def get_mean_displacement(self, position: GridPosition) -> Optional[Tuple[float, ...]]:
+        """Get expected displacement at a position
+        
+        Args:
+            position: Grid position to query.
+            
+        Returns:
+            Mean displacement tuple or None if not available.
+            - 3D: (u_mean, v_mean) on ambient axes
+            - 2D: (u_mean,) on single ambient axis
         """
         return None
     
