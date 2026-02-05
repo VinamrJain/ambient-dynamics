@@ -90,6 +90,14 @@ def save_animated_html(
         if renderer.show_grid_points:
             frame_data.append(renderer._get_grid_points_trace())
         
+        if renderer.show_field:
+            field_trace = renderer._get_field_trace()
+            if field_trace is not None:
+                if isinstance(field_trace, list):
+                    frame_data.extend(field_trace)
+                else:
+                    frame_data.append(field_trace)
+        
         frame_data.append(renderer._get_target_vicinity_trace(state))
         frame_data.append(renderer._get_target_trace(state))
         frame_data.append(renderer._get_initial_position_trace(state))

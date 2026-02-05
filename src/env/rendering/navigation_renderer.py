@@ -1,35 +1,27 @@
-"""Navigation arena renderer using Plotly backend.
-
-Supports both 2D and 3D navigation tasks:
-- 2D: Uses Scatter plots, vicinity shown as circle
-- 3D: Uses Scatter3d plots, vicinity shown as cylinder
-
-Core visualization logic for navigation tasks. Supports:
-- Standard Gymnasium modes: 'human' (interactive), 'rgb_array' (numpy array)
-- Export methods: save_gif(), save_mp4(), save_html(), save_animated_html()
-"""
-
-from typing import List, Union, Optional
+from typing import List, Union, Optional, TYPE_CHECKING
 import numpy as np
 import plotly.graph_objects as go
+import plotly.figure_factory as ff
 from io import BytesIO
 from PIL import Image
 
 from .renderer import Renderer
-from ..utils.types import GridConfig, NavigationArenaState
+from ..utils.types import GridConfig, NavigationArenaState, GridPosition
+
+if TYPE_CHECKING:
+    from ..field.abstract_field import AbstractField
 
 
 class NavigationRenderer(Renderer):
-    """Renderer for navigation tasks (Plotly backend).
-    
-    Extracts all visualization info from NavigationArenaState.
-    
-    Features:
-    - Interactive 2D/3D visualization
-    - Grid points (with smart sub-sampling for large grids)
-    - Actor position and trajectory
-    - Target position with vicinity region (circle for 2D, cylinder for 3D)
-    - Episode info (step, action, reward, cumulative reward)
+    """Navigation arena renderer using Plotly backend.
+
+    Supports both 2D and 3D navigation tasks:
+    - 2D: Uses Scatter plots, vicinity shown as circle
+    - 3D: Uses Scatter3d plots, vicinity shown as cylinder
+
+    Core visualization logic for navigation tasks. Supports:
+    - Standard Gymnasium modes: 'human' (interactive), 'rgb_array' (numpy array)
+    - Export methods: save_gif(), save_mp4(), save_html(), save_animated_html()
     """
     
     def __init__(
@@ -40,7 +32,9 @@ class NavigationRenderer(Renderer):
         show_grid_points: bool = True,
         grid_subsample: Optional[int] = None,
         backend: str = 'plotly',
-        camera_eye: Optional[dict] = None
+        camera_eye: Optional[dict] = None,
+        field: Optional['AbstractField'] = None,
+        show_field: bool = False
     ):
         """Initialize navigation renderer.
         
@@ -49,7 +43,7 @@ class NavigationRenderer(Renderer):
             width: Figure width in pixels.
             height: Figure height in pixels.
             show_grid_points: Whether to show grid points.
-            grid_subsample: Subsample factor for grid points (auto if None).
+            grid_subsample: Subsample factor for grid points and field arrows (auto if None).
             backend: Rendering backend ('plotly').
             camera_eye: Camera position for 3D (ignored for 2D).
                        Defaults to (1.5, -1.5, 1.0) for 45 degree perspective.
@@ -57,6 +51,8 @@ class NavigationRenderer(Renderer):
                          - Top-down: {'x': 0, 'y': 0, 'z': 2.5}
                          - Side view: {'x': 2.5, 'y': 0, 'z': 0}
                          - Isometric: {'x': 1.5, 'y': -1.5, 'z': 1.0}
+            field: Optional field for visualizing mean displacements.
+            show_field: Whether to show field arrows (requires field with get_mean_displacement).
         """
         self.config = config
         self.width = width
@@ -64,6 +60,8 @@ class NavigationRenderer(Renderer):
         self.show_grid_points = show_grid_points
         self.backend = backend
         self.camera_eye = camera_eye or {'x': 1.5, 'y': -1.5, 'z': 1.0}
+        self.field = field
+        self.show_field = show_field
         
         # Compute smart scaling based on grid size
         self._compute_scaling()
@@ -167,6 +165,9 @@ class NavigationRenderer(Renderer):
         # Add visualization elements
         if self.show_grid_points:
             self._add_grid_points(fig)
+        
+        if self.show_field:
+            self._add_field(fig)
         
         self._add_target_vicinity(fig, current_state)
         self._add_target(fig, current_state)
@@ -323,6 +324,16 @@ class NavigationRenderer(Renderer):
         """Add subsampled grid points."""
         fig.add_trace(self._get_grid_points_trace())
     
+    def _add_field(self, fig: go.Figure):
+        """Add field mean displacement arrows."""
+        trace = self._get_field_trace()
+        if trace is not None:
+            if isinstance(trace, list):
+                for t in trace:
+                    fig.add_trace(t)
+            else:
+                fig.add_trace(trace)
+    
     def _add_target_vicinity(self, fig: go.Figure, state: NavigationArenaState):
         """Add target vicinity region (cylinder for 3D, circle for 2D)."""
         fig.add_trace(self._get_target_vicinity_trace(state))
@@ -385,6 +396,115 @@ class NavigationRenderer(Renderer):
                 showlegend=False,
                 hoverinfo='skip'
             )
+    
+    def _get_field_trace(self):
+        """Get field mean displacement arrows as Plotly trace(s).
+        
+        Returns:
+            - 2D: List of traces from create_quiver (arrows in x direction only)
+            - 3D: go.Cone trace at all subsampled z-slices (arrows in x-y plane, w=0)
+            - None if field not available, doesn't support get_mean_displacement,
+              or all arrows are zero
+        """
+        if self.field is None:
+            return None
+        
+        # Check if field supports mean displacement
+        if not hasattr(self.field, 'get_mean_displacement'):
+            return None
+        
+        i_range = range(1, self.config.n_x + 1, self.grid_subsample)
+        j_range = range(1, self.config.n_y + 1, self.grid_subsample)
+        
+        if self.ndim == 3:
+            # 3D: Cones showing (u, v, 0) displacement at all subsampled z-slices
+            k_range = range(1, self.config.n_z + 1, self.grid_subsample)
+            
+            x_coords, y_coords, z_coords = [], [], []
+            u_vals, v_vals, w_vals = [], [], []
+            
+            for i in i_range:
+                for j in j_range:
+                    for k in k_range:
+                        pos = GridPosition(i, j, k)
+                        mean = self.field.get_mean_displacement(pos)
+                        if mean is not None:
+                            x_coords.append(i)
+                            y_coords.append(j)
+                            z_coords.append(k)
+                            u_vals.append(mean[0])
+                            v_vals.append(mean[1] if len(mean) > 1 else 0.0)
+                            w_vals.append(0.0)  # No z-component (field only affects ambient)
+            
+            if not x_coords:
+                return None
+            
+            # Check if all arrows are zero (e.g., SimpleField)
+            max_mag = max(np.sqrt(u**2 + v**2) for u, v in zip(u_vals, v_vals)) if u_vals else 0.0
+            if max_mag < 1e-6:
+                # All arrows are essentially zero - skip visualization
+                return None
+            
+            # Scale for visibility
+            sizeref = max(0.5, max_mag) if max_mag > 0 else 0.5
+            
+            return go.Cone(
+                x=x_coords, y=y_coords, z=z_coords,
+                u=u_vals, v=v_vals, w=w_vals,
+                sizemode='absolute',
+                sizeref=sizeref,
+                anchor='tail',
+                colorscale='Blues',
+                opacity=0.6,
+                showscale=False,
+                name='Field',
+                showlegend=True
+            )
+        else:
+            # 2D: Quiver arrows showing (u, 0) displacement
+            # In 2D, field only affects x (ambient), arrows point in x direction
+            x_coords, y_coords = [], []
+            u_vals, v_vals = [], []  # v is always 0 for 2D (field doesn't affect y)
+            
+            for i in i_range:
+                for j in j_range:
+                    pos = GridPosition(i, j, None)
+                    mean = self.field.get_mean_displacement(pos)
+                    if mean is not None:
+                        x_coords.append(float(i))
+                        y_coords.append(float(j))
+                        u_vals.append(mean[0])
+                        v_vals.append(0.0)  # Field only affects ambient (x), not controllable (y)
+            
+            if not x_coords:
+                return None
+            
+            # Check if all arrows are zero (e.g., SimpleField)
+            max_mag = max(abs(u) for u in u_vals) if u_vals else 0.0
+            if max_mag < 1e-6:
+                # All arrows are essentially zero - skip visualization
+                return None
+            
+            # Scale arrows for visibility
+            scale = 0.3 * self.grid_subsample / max_mag if max_mag > 0 else 0.3
+            
+            # Create quiver plot
+            quiver_fig = ff.create_quiver(
+                x_coords, y_coords, u_vals, v_vals,
+                scale=scale,
+                arrow_scale=0.3,
+                line=dict(color='steelblue', width=1.5),
+                name='Field'
+            )
+            
+            # Return the traces (quiver creates multiple traces)
+            traces = list(quiver_fig.data)
+            # Only show legend for first trace
+            for i, trace in enumerate(traces):
+                trace.showlegend = (i == 0)
+                trace.name = 'Field' if i == 0 else None
+            
+            return traces
     
     def _get_target_vicinity_trace(self, state: NavigationArenaState):
         """Get target vicinity region as Plotly trace."""
