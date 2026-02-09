@@ -83,7 +83,7 @@ class AbstractField(ABC):
         """
         return None
     
-    def get_continuous_field(self) -> Optional[np.ndarray]:
+    def get_mean_displacement_field(self) -> Optional[np.ndarray]:
         """Get underlying continuous field if available.
         
         Returns:
