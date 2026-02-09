@@ -22,21 +22,24 @@ from src.env.utils.types import GridConfig, GridPosition
 # Fixtures
 # =============================================================================
 
+D_MAX_TEST = 3  # Default d_max for boundary tests
+
+
 @pytest.fixture
 def config_3d():
-    """3D grid config: 10x10x5 with d_max=1."""
-    return GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=5)
+    """3D grid config: 10x10x5."""
+    return GridConfig.create(n_x=10, n_y=10, n_z=5)
 
 
 @pytest.fixture
 def config_2d():
-    """2D grid config: 10x8 with d_max=1."""
-    return GridConfig.create(n_x=10, n_y=8, d_max=1)
+    """2D grid config: 10x8."""
+    return GridConfig.create(n_x=10, n_y=8)
 
 
-def make_arena(config: GridConfig, boundary_mode: str) -> GridArena:
+def make_arena(config: GridConfig, boundary_mode: str, d_max: int = D_MAX_TEST) -> GridArena:
     """Helper to create a GridArena for testing."""
-    field = SimpleField(config)
+    field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_prob=0.0)  # Deterministic for testing
     
     if config.ndim == 3:

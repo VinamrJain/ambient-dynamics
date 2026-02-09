@@ -22,6 +22,9 @@ from src.env.utils.types import GridConfig, GridPosition
 # Fixtures and Helpers
 # =============================================================================
 
+D_MAX_DEFAULT = 3  # Default d_max for integration tests
+
+
 def make_navigation_env(
     config: GridConfig,
     initial_position: GridPosition,
@@ -33,10 +36,11 @@ def make_navigation_env(
     vicinity_radius: float = 2.0,
     vicinity_bonus: float = 10.0,
     distance_reward_weight: float = -0.1,
-    step_penalty: float = -0.5
+    step_penalty: float = -0.5,
+    d_max: int = D_MAX_DEFAULT
 ) -> GridEnvironment:
     """Create a NavigationArena-backed GridEnvironment."""
-    field = SimpleField(config)
+    field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_prob=0.0)  # Deterministic for testing
     
     arena = NavigationArena(
@@ -61,10 +65,11 @@ def make_grid_env(
     initial_position: GridPosition,
     max_steps: int = 100,
     seed: int = 42,
-    boundary_mode: str = 'clip'
+    boundary_mode: str = 'clip',
+    d_max: int = D_MAX_DEFAULT
 ) -> GridEnvironment:
     """Create a basic GridArena-backed GridEnvironment."""
-    field = SimpleField(config)
+    field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_prob=0.0)
     
     arena = GridArena(
@@ -88,14 +93,15 @@ class TestMinimalGrids:
     def test_1x1x1_grid_3d(self):
         """1x1x1 grid: agent cannot move, always at (1,1,1)."""
         # d_max must be 0 for 1x1 ambient dimensions
-        config = GridConfig(n_x=1, n_y=1, n_z=1, d_max=0)
+        config = GridConfig(n_x=1, n_y=1, n_z=1)
         initial = GridPosition(1, 1, 1)
         target = GridPosition(1, 1, 1)
         
         env = make_navigation_env(
             config, initial, target,
             vicinity_radius=0.5,
-            max_steps=10
+            max_steps=10,
+            d_max=0
         )
         
         obs, info = env.reset(seed=0)
@@ -111,11 +117,11 @@ class TestMinimalGrids:
     
     def test_1x1_grid_2d(self):
         """1x1 grid in 2D: agent stuck at (1, 1)."""
-        config = GridConfig(n_x=1, n_y=1, n_z=None, d_max=0)
+        config = GridConfig(n_x=1, n_y=1, n_z=None)
         initial = GridPosition(1, 1, None)
         target = GridPosition(1, 1, None)
         
-        env = make_navigation_env(config, initial, target, vicinity_radius=0.5)
+        env = make_navigation_env(config, initial, target, vicinity_radius=0.5, d_max=0)
         obs, _ = env.reset(seed=0)
         
         for _ in range(5):
@@ -125,14 +131,15 @@ class TestMinimalGrids:
     
     def test_1x1xN_grid_vertical_corridor(self):
         """1x1xN grid: only vertical movement possible (like a tower)."""
-        config = GridConfig(n_x=1, n_y=1, n_z=10, d_max=0)
+        config = GridConfig(n_x=1, n_y=1, n_z=10)
         initial = GridPosition(1, 1, 1)
         target = GridPosition(1, 1, 10)
         
         env = make_navigation_env(
             config, initial, target,
             vicinity_radius=1.5,
-            terminate_on_reach=True
+            terminate_on_reach=True,
+            d_max=0
         )
         
         obs, _ = env.reset(seed=0)
@@ -149,10 +156,10 @@ class TestMinimalGrids:
     
     def test_Nx1_grid_horizontal_corridor_2d(self):
         """Nx1 grid in 2D: narrow horizontal corridor."""
-        config = GridConfig(n_x=20, n_y=1, n_z=None, d_max=1)
+        config = GridConfig(n_x=20, n_y=1, n_z=None)
         initial = GridPosition(1, 1, None)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=1)
         obs, _ = env.reset(seed=0)
         
         # j coordinate stuck at 1
@@ -170,14 +177,15 @@ class TestLargeGrids:
     
     def test_large_3d_grid_100x100x50(self):
         """Large 3D grid: verify episode runs without errors."""
-        config = GridConfig.create(n_x=100, n_y=100, d_max=5, n_z=50)
+        config = GridConfig.create(n_x=100, n_y=100, n_z=50)
         initial = GridPosition(50, 50, 25)
         target = GridPosition(90, 90, 45)
         
         env = make_navigation_env(
             config, initial, target,
             vicinity_radius=5.0,
-            max_steps=50
+            max_steps=50,
+            d_max=5
         )
         
         obs, _ = env.reset(seed=42)
@@ -198,14 +206,15 @@ class TestLargeGrids:
     
     def test_large_2d_grid_200x100(self):
         """Large 2D grid: verify correct behavior."""
-        config = GridConfig.create(n_x=200, n_y=100, d_max=10)
+        config = GridConfig.create(n_x=200, n_y=100)
         initial = GridPosition(100, 50, None)
         target = GridPosition(180, 90, None)
         
         env = make_navigation_env(
             config, initial, target,
             vicinity_radius=10.0,
-            max_steps=30
+            max_steps=30,
+            d_max=10
         )
         
         obs, _ = env.reset(seed=42)
@@ -218,10 +227,10 @@ class TestLargeGrids:
     
     def test_asymmetric_grid_wide(self):
         """Asymmetric grid: very wide (n_x >> n_y, n_z)."""
-        config = GridConfig.create(n_x=100, n_y=5, d_max=2, n_z=3)
+        config = GridConfig.create(n_x=100, n_y=5, n_z=3)
         initial = GridPosition(1, 3, 2)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=2)
         obs, _ = env.reset(seed=0)
         
         # Verify bounds are respected
@@ -235,10 +244,10 @@ class TestLargeGrids:
     
     def test_asymmetric_grid_tall(self):
         """Asymmetric grid: very tall (n_z >> n_x, n_y)."""
-        config = GridConfig.create(n_x=5, n_y=5, d_max=2, n_z=100)
+        config = GridConfig.create(n_x=5, n_y=5, n_z=100)
         initial = GridPosition(3, 3, 50)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=2)
         obs, _ = env.reset(seed=0)
         
         for _ in range(20):
@@ -259,10 +268,10 @@ class TestObservationShapes:
     
     def test_3d_observation_shape_is_5(self):
         """3D observation: [i, j, k, u, v] = shape (5,)."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=2, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=2)
         obs, _ = env.reset(seed=0)
         
         assert obs.shape == (5,)
@@ -279,10 +288,10 @@ class TestObservationShapes:
     
     def test_2d_observation_shape_is_3(self):
         """2D observation: [i, j, u] = shape (3,)."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=2)
+        config = GridConfig.create(n_x=10, n_y=10)
         initial = GridPosition(5, 5, None)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=2)
         obs, _ = env.reset(seed=0)
         
         assert obs.shape == (3,)
@@ -304,14 +313,15 @@ class TestTerminationConditions:
     
     def test_max_steps_truncation(self):
         """Episode truncates at max_steps."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(1, 1, 1)
         target = GridPosition(9, 9, 9)  # Far away
         
         env = make_navigation_env(
             config, initial, target,
             max_steps=10,
-            terminate_on_reach=False
+            terminate_on_reach=False,
+            d_max=1
         )
         
         obs, _ = env.reset(seed=0)
@@ -328,7 +338,7 @@ class TestTerminationConditions:
     
     def test_terminate_on_reach(self):
         """Episode terminates when target vicinity is reached."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=0, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 1)
         target = GridPosition(5, 5, 5)
         
@@ -336,7 +346,8 @@ class TestTerminationConditions:
             config, initial, target,
             vicinity_radius=1.5,
             terminate_on_reach=True,
-            max_steps=100
+            max_steps=100,
+            d_max=0
         )
         
         obs, _ = env.reset(seed=0)
@@ -356,10 +367,11 @@ class TestTerminationConditions:
     
     def test_terminal_boundary_mode(self):
         """Episode terminates when boundary is violated in terminal mode."""
-        config = GridConfig.create(n_x=5, n_y=5, d_max=2, n_z=5)
+        config = GridConfig.create(n_x=5, n_y=5, n_z=5)
         initial = GridPosition(1, 1, 1)  # At corner
+        d_max = 2
         
-        field = SimpleField(config)
+        field = SimpleField(config, d_max=d_max)
         actor = GridActor(noise_prob=0.0)
         
         arena = GridArena(
@@ -396,14 +408,15 @@ class TestStationKeeping:
     
     def test_station_keeping_accumulates_reward(self):
         """Starting at target should accumulate positive rewards."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=0, n_z=10)  # No field drift
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         target = GridPosition(5, 5, 5)
         
         env = make_navigation_env(
             config, target, target,  # Start at target
             vicinity_radius=2.0,
             vicinity_bonus=10.0,
-            max_steps=20
+            max_steps=20,
+            d_max=0  # No field drift
         )
         
         obs, _ = env.reset(seed=0)
@@ -426,12 +439,12 @@ class TestDeterminism:
     
     def test_same_seed_same_trajectory(self):
         """Same seed produces identical trajectories."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=2, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         target = GridPosition(8, 8, 8)
         
         # Run episode 1
-        env1 = make_navigation_env(config, initial, target, seed=12345)
+        env1 = make_navigation_env(config, initial, target, seed=12345, d_max=2)
         obs1, _ = env1.reset(seed=12345)
         
         trajectory1 = [obs1.copy()]
@@ -442,7 +455,7 @@ class TestDeterminism:
             rewards1.append(reward)
         
         # Run episode 2 with same seed and actions
-        env2 = make_navigation_env(config, initial, target, seed=12345)
+        env2 = make_navigation_env(config, initial, target, seed=12345, d_max=2)
         obs2, _ = env2.reset(seed=12345)
         
         trajectory2 = [obs2.copy()]
@@ -461,18 +474,18 @@ class TestDeterminism:
     
     def test_different_seeds_different_trajectories(self):
         """Different seeds produce different trajectories (with stochastic field)."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=2, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         target = GridPosition(8, 8, 8)
         
         # Run with seed 1
-        env1 = make_navigation_env(config, initial, target, seed=111)
+        env1 = make_navigation_env(config, initial, target, seed=111, d_max=2)
         obs1, _ = env1.reset(seed=111)
         for _ in range(10):
             obs1, _, _, _, _ = env1.step(action=1)
         
         # Run with seed 2
-        env2 = make_navigation_env(config, initial, target, seed=222)
+        env2 = make_navigation_env(config, initial, target, seed=222, d_max=2)
         obs2, _ = env2.reset(seed=222)
         for _ in range(10):
             obs2, _, _, _, _ = env2.step(action=1)
@@ -490,10 +503,10 @@ class TestStateConsistency:
     
     def test_step_count_increments(self):
         """step_count increments each step."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=1)
         obs, info = env.reset(seed=0)
         
         assert info['step_count'] == 0
@@ -504,10 +517,10 @@ class TestStateConsistency:
     
     def test_position_within_bounds_clip_mode(self):
         """Position always within bounds in clip mode."""
-        config = GridConfig.create(n_x=5, n_y=5, d_max=2, n_z=5)
+        config = GridConfig.create(n_x=5, n_y=5, n_z=5)
         initial = GridPosition(1, 1, 1)  # Corner
         
-        env = make_grid_env(config, initial, boundary_mode='clip')
+        env = make_grid_env(config, initial, boundary_mode='clip', d_max=2)
         env.reset(seed=0)
         
         # Run many steps with random actions
@@ -521,10 +534,10 @@ class TestStateConsistency:
     
     def test_position_within_bounds_2d_clip_mode(self):
         """2D position always within bounds in clip mode."""
-        config = GridConfig.create(n_x=5, n_y=8, d_max=2)
+        config = GridConfig.create(n_x=5, n_y=8)
         initial = GridPosition(1, 1, None)
         
-        env = make_grid_env(config, initial, boundary_mode='clip')
+        env = make_grid_env(config, initial, boundary_mode='clip', d_max=2)
         env.reset(seed=0)
         
         for _ in range(100):
@@ -537,10 +550,10 @@ class TestStateConsistency:
     
     def test_last_displacement_updated(self):
         """last_displacement is updated each step."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=2, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=2)
         _, info = env.reset(seed=0)
         
         # Initial displacement should be zero
@@ -555,11 +568,11 @@ class TestStateConsistency:
     
     def test_reset_clears_state(self):
         """Reset clears episode state."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         target = GridPosition(8, 8, 8)
         
-        env = make_navigation_env(config, initial, target)
+        env = make_navigation_env(config, initial, target, d_max=1)
         
         # Run some steps
         env.reset(seed=0)
@@ -584,19 +597,19 @@ class TestActionSpace:
     
     def test_action_space_is_discrete_3(self):
         """Action space is Discrete(3): down, stay, up."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=1)
         
         assert env.action_space.n == 3
     
     def test_all_actions_valid(self):
         """All actions 0, 1, 2 are valid."""
-        config = GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=10)
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
         initial = GridPosition(5, 5, 5)
         
-        env = make_grid_env(config, initial)
+        env = make_grid_env(config, initial, d_max=1)
         env.reset(seed=0)
         
         # All actions should work without error

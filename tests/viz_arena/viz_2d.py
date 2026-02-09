@@ -26,14 +26,15 @@ def run_2d_visualization():
     print("=" * 70)
     
     # Configuration: 2D grid (no n_z)
-    config = GridConfig.create(n_x=150, n_y=120, d_max=10)
+    config = GridConfig.create(n_x=150, n_y=120)
+    d_max = 10
     
     print(f"\nGrid configuration:")
     print(f"  Dimensions: {config.ndim}D")
     print(f"  Size: {config.n_x} x {config.n_y}")
     print(f"  Ambient axis: x (size {config.n_x})")
     print(f"  Controllable axis: y (size {config.n_y})")
-    print(f"  Max displacement: {config.d_max}")
+    print(f"  Max displacement: {d_max}")
     
     # Positions
     initial_position = GridPosition(30, 30, None)
@@ -46,7 +47,7 @@ def run_2d_visualization():
     print(f"  Vicinity radius: {vicinity_radius}")
     
     # Create components
-    field = SimpleField(config)
+    field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_prob=0.1)
     
     arena = NavigationArena(

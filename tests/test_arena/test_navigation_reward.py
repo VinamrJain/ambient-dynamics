@@ -23,16 +23,19 @@ from src.env.utils.types import GridConfig, GridPosition
 # Fixtures
 # =============================================================================
 
+D_MAX_TEST = 3  # Default d_max for reward tests
+
+
 @pytest.fixture
 def config_3d():
-    """3D grid config: 10x10x10 with d_max=1."""
-    return GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=10)
+    """3D grid config: 10x10x10."""
+    return GridConfig.create(n_x=10, n_y=10, n_z=10)
 
 
 @pytest.fixture
 def config_2d():
-    """2D grid config: 10x10 with d_max=1."""
-    return GridConfig.create(n_x=10, n_y=10, d_max=1)
+    """2D grid config: 10x10."""
+    return GridConfig.create(n_x=10, n_y=10)
 
 
 def make_navigation_arena(
@@ -44,10 +47,11 @@ def make_navigation_arena(
     vicinity_bonus: float = 10.0,
     step_penalty: float = -0.5,
     use_distance_decay: bool = False,
-    decay_rate: float = 0.5
+    decay_rate: float = 0.5,
+    d_max: int = D_MAX_TEST
 ) -> NavigationArena:
     """Helper to create a NavigationArena for testing."""
-    field = SimpleField(config)
+    field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_prob=0.0)
     
     return NavigationArena(

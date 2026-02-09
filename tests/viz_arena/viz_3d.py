@@ -26,14 +26,15 @@ def run_3d_visualization():
     print("=" * 70)
     
     # Configuration: 3D grid
-    config = GridConfig.create(n_x=12, n_y=12, d_max=1, n_z=8)
+    config = GridConfig.create(n_x=12, n_y=12, n_z=8)
+    d_max = 3
     
     print(f"\nGrid configuration:")
     print(f"  Dimensions: {config.ndim}D")
     print(f"  Size: {config.n_x} x {config.n_y} x {config.n_z}")
     print(f"  Ambient axes: x, y (size {config.n_x} x {config.n_y})")
     print(f"  Controllable axis: z (size {config.n_z})")
-    print(f"  Max displacement: {config.d_max}")
+    print(f"  Max displacement: {d_max}")
     
     # Positions
     initial_position = GridPosition(2, 2, 2)
@@ -46,7 +47,7 @@ def run_3d_visualization():
     print(f"  Vicinity radius: {vicinity_radius}")
     
     # Create components
-    field = SimpleField(config)
+    field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_prob=0.1)
     
     arena = NavigationArena(
@@ -134,7 +135,8 @@ def run_3d_station_keeping():
     print("=" * 70)
     
     # Configuration
-    config = GridConfig.create(n_x=10, n_y=10, d_max=1, n_z=6)
+    config = GridConfig.create(n_x=10, n_y=10, n_z=6)
+    d_max = 1
     
     # Start at target for station-keeping
     target_position = GridPosition(5, 5, 3)
@@ -146,7 +148,7 @@ def run_3d_station_keeping():
     print(f"  Vicinity radius: {vicinity_radius}")
     print(f"  Agent tries to stay within vicinity despite field perturbations")
     
-    field = SimpleField(config)
+    field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_prob=0.1)
     
     arena = NavigationArena(

@@ -204,7 +204,7 @@ class GridArena(AbstractArena):
         - 3D: [i, j, k, u_obs, v_obs] (5 dimensions)
         - 2D: [i, j, u_obs] (3 dimensions)
         """
-        d_max = self.config.d_max
+        d_max = self.field.d_max
         
         if self.ndim == 3:
             return gym.spaces.Box(
