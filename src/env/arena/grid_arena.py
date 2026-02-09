@@ -30,7 +30,7 @@ class GridArena(AbstractArena):
         actor: AbstractActor,
         config: GridConfig,
         initial_position: GridPosition,
-        boundary_mode: str = 'clip'
+        boundary_mode: str = 'terminal'
     ):
         """Initialize grid arena.
         
@@ -40,9 +40,9 @@ class GridArena(AbstractArena):
             config: Grid configuration.
             initial_position: Starting position for reset.
             boundary_mode: How to handle boundaries:
-                - 'clip': Clamp position to valid range (default)
+                - 'clip': Clamp position to valid range
                 - 'periodic': Wrap around on ambient axes, clip on controllable
-                - 'terminal': Mark as terminal when crossing boundary
+                - 'terminal': Mark as terminal when crossing boundary (default)
         """
         self.field = field
         self.actor = actor
