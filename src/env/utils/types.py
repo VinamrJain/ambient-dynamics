@@ -98,9 +98,6 @@ class GridConfig(NamedTuple):
     - 3D: n_z is set, agent controls z, field controls (x, y)
     - 2D: n_z is None, agent controls y, field controls (x,)
     
-    Note: d_max (maximum displacement magnitude) is now a field parameter,
-    not a grid configuration parameter. See AbstractField.d_max.
-    
     Args:
         n_x: Grid size on ambient axis 1 (always present)
         n_y: Grid size on ambient axis 2 (3D) or controllable axis (2D)
