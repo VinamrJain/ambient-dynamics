@@ -2,8 +2,6 @@
 
 import os
 import sys
-import warnings
-
 import jax
 import numpy as np
 import pytest
@@ -172,20 +170,25 @@ def test_reset_reproducibility_and_seed_change(case: dict):
     assert not np.allclose(mean_1, mean_3)
 
 
-@pytest.mark.parametrize("case", RANDOM_CASES[:3] + RANDOM_CASES[10:13], ids=lambda c: f'{c["ndim"]}d-seed{c["seed"]}')
-def test_zero_noise_sample_matches_clipped_mean(case: dict):
-    """With zero observation noise, sample equals clipped mean exactly."""
-    field = _build_field(case, noise_std=0.0)
-    field.reset(jax.random.PRNGKey(case["seed"]))
-
-    for pos in _probe_positions(case):
-        mean = field.get_mean_displacement(pos)
-        sample = field.sample_displacement(pos, jax.random.PRNGKey(case["seed"] + 55))
-        assert sample.u == pytest.approx(np.clip(mean[0], -field.d_max, field.d_max), abs=1e-7)
-        if case["ndim"] == 2:
-            assert sample.v is None
-        else:
-            assert sample.v == pytest.approx(np.clip(mean[1], -field.d_max, field.d_max), abs=1e-7)
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"sigma": 0.0}, "sigma must be positive"),
+        ({"sigma": -1.0}, "sigma must be positive"),
+        ({"lengthscale": 0.0}, "lengthscale must be positive"),
+        ({"lengthscale": -1.0}, "lengthscale must be positive"),
+        ({"nu": 0.0}, "nu must be positive"),
+        ({"nu": -0.5}, "nu must be positive"),
+        ({"num_features": 0}, "num_features must be positive"),
+        ({"num_features": -16}, "num_features must be positive"),
+        ({"noise_std": -1e-3}, "noise_std must be non-negative"),
+    ],
+)
+def test_positive_hyperparameters_validated(kwargs: dict, match: str):
+    """Constructor enforces positivity for GP/RFF hyperparameters."""
+    config = GridConfig.create(n_x=8, n_y=7)
+    with pytest.raises(ValueError, match=match):
+        RFFGPField(config=config, d_max=2, **kwargs)
 
 
 @pytest.mark.parametrize("case", RANDOM_CASES[10:13], ids=lambda c: f'3d-seed{c["seed"]}')
@@ -211,16 +214,23 @@ def test_divergence_free_streamfunction(case: dict):
         assert abs(float(divergence)) < 1e-3
 
 
-def test_pmf_fallback_warning_or_valid_normalization():
-    """Extreme setup either warns on fallback or still returns normalized PMF."""
+def test_zero_noise_is_deterministic_for_sample_and_pmf():
+    """With zero noise, sample and PMF collapse to clipped+rounded mean."""
     config = GridConfig.create(n_x=3, n_y=3)
-    field = RFFGPField(config, d_max=1, sigma=1_000.0, noise_std=0.01, num_features=128)
+    field = RFFGPField(config, d_max=2, sigma=1.0, lengthscale=1.0, nu=2.5, num_features=128, noise_std=0.0)
     field.reset(jax.random.PRNGKey(42))
 
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-        pmf = field.get_displacement_pmf(GridPosition(2, 2, None))
-        assert pmf.shape == (3,)
-        assert float(np.sum(pmf)) == pytest.approx(1.0, abs=1e-5)
-        assert np.all(pmf >= 0.0)
-        assert captured is not None
+    # Choose a mean whose clipped+rounded value is deterministic and non-boundary.
+    mu = 1.3
+    field._precomputed_u = field._precomputed_u.at[1, 1].set(mu)
+    pos = GridPosition(2, 2, None)
+    expected_displacement = int(round(np.clip(mu, -field.d_max, field.d_max)))
+
+    sample = field.sample_displacement(pos, jax.random.PRNGKey(7))
+    assert sample.u == pytest.approx(float(np.clip(mu, -field.d_max, field.d_max)), abs=1e-7)
+    assert sample.u_int == expected_displacement
+
+    pmf = field.get_displacement_pmf(pos)
+    assert pmf.shape == (2 * field.d_max + 1,)
+    assert np.count_nonzero(pmf) == 1
+    assert pmf[expected_displacement + field.d_max] == pytest.approx(1.0, abs=1e-7)

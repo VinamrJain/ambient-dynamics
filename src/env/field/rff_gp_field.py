@@ -6,7 +6,6 @@ Implements GP-based environmental fields using RFF approximation for O(L) comple
 
 """
 
-import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -61,6 +60,17 @@ class RFFGPField(AbstractField):
             noise_std: Standard deviation of observation noise added to GP samples.
         """
         super().__init__(config, d_max)
+
+        if sigma <= 0.0:
+            raise ValueError(f"sigma must be positive, got {sigma}")
+        if lengthscale <= 0.0:
+            raise ValueError(f"lengthscale must be positive, got {lengthscale}")
+        if nu <= 0.0:
+            raise ValueError(f"nu must be positive, got {nu}")
+        if num_features <= 0:
+            raise ValueError(f"num_features must be positive, got {num_features}")
+        if noise_std < 0.0:
+            raise ValueError(f"noise_std must be non-negative, got {noise_std}")
         
         self.sigma = sigma
         self.lengthscale = lengthscale
@@ -309,16 +319,15 @@ class RFFGPField(AbstractField):
             return np.asarray(jnp.stack([self._precomputed_u, self._precomputed_v], axis=-1))
     
     def get_displacement_pmf(self, position: GridPosition) -> np.ndarray:
-        """Compute truncated PMF of discretized displacement at position.
+        """Compute clipped PMF of discretized displacement at position.
         
-        For displacement U_obs = U(r) + epsilon where epsilon ~ N(0, noise_std^2),
-        the probability of discrete displacement k is:
+        This matches runtime sampling:
+            1) sample U_obs = mu + epsilon, epsilon ~ N(0, noise_std^2)
+            2) clip U_obs to [-d_max, d_max]
+            3) use round(clipped value) for state transitions
         
-            P(U_actual = k) = Phi((k+0.5-mu)/sigma) - Phi((k-0.5-mu)/sigma)
-        
-        where mu = U(r) is the GP mean and sigma = noise_std.
-        
-        The PMF is truncated to [-d_max, d_max] and normalized.
+        Therefore, probability mass outside [-d_max, d_max] is accumulated at
+        the boundary values ±d_max
         
         Args:
             position: Grid position to query.
@@ -327,34 +336,41 @@ class RFFGPField(AbstractField):
             NumPy PMF array:
             - 2D: shape (2*d_max+1,), entry [i] = P(u=i-d_max)
             - 3D: shape (2*d_max+1, 2*d_max+1), entry [i,j] = P(u=i-d_max, v=j-d_max)
-        """ # FIXME: Note that since we are clipping, the pmf stores all the truncated mass at d_max.
+        """
         u_mean, v_mean = self._get_mean_at_position(position)
-        size = 2 * self.d_max + 1
         
         def compute_1d_pmf(mu: float) -> jnp.ndarray:
-            """Compute 1D truncated PMF for a single component using JAX."""
+            """Compute 1D clipped PMF for a single component using JAX."""
+            if self.d_max == 0:
+                return jnp.ones(1, dtype=jnp.float32)
+
             k_values = jnp.arange(-self.d_max, self.d_max + 1)
-            
-            # Compute CDF differences
-            upper = (k_values + 0.5 - mu) / self.noise_std
-            lower = (k_values - 0.5 - mu) / self.noise_std
-            pmf = jax_norm.cdf(upper) - jax_norm.cdf(lower)
-            
-            # Normalize
-            total = jnp.sum(pmf)
-            
-            # Check if normalization is valid
-            if float(total) > 1e-10:
-                return pmf / total
-            else:
-                # Fallback: uniform if all mass outside truncation window
-                warnings.warn(
-                    f"PMF fallback triggered: GP mean {mu:.2f} resulted in near-zero "
-                    f"probability mass within [-{self.d_max}, {self.d_max}]. "
-                    f"Consider increasing d_max or adjusting GP parameters.",
-                    RuntimeWarning
-                )
-                return jnp.ones(size) / size
+            sigma = self.noise_std
+
+            if sigma == 0.0:
+                clipped = float(np.clip(mu, -self.d_max, self.d_max))
+                rounded = int(round(clipped))
+                one_hot = jnp.zeros_like(k_values, dtype=jnp.float32)
+                return one_hot.at[rounded + self.d_max].set(1.0)
+
+            pmf = jnp.zeros_like(k_values, dtype=jnp.float32)
+
+            # Left boundary: P(U_obs < -d_max + 0.5)
+            left_boundary = jax_norm.cdf((-self.d_max + 0.5 - mu) / sigma)
+            pmf = pmf.at[0].set(left_boundary)
+
+            # Interior bins: P(k-0.5 <= U_obs < k+0.5)
+            if self.d_max > 0:
+                interior_k = jnp.arange(-self.d_max + 1, self.d_max)
+                upper = (interior_k + 0.5 - mu) / sigma
+                lower = (interior_k - 0.5 - mu) / sigma
+                interior_pmf = jax_norm.cdf(upper) - jax_norm.cdf(lower)
+                pmf = pmf.at[1:-1].set(interior_pmf.astype(jnp.float32))
+
+            # Right boundary: P(U_obs >= d_max - 0.5)
+            right_boundary = 1.0 - jax_norm.cdf((self.d_max - 0.5 - mu) / sigma)
+            pmf = pmf.at[-1].set(right_boundary)
+            return pmf
         
         if self.ndim == 2:
             return np.asarray(compute_1d_pmf(u_mean), dtype=np.float32)
