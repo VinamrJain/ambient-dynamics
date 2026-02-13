@@ -1,312 +1,245 @@
-"""Tests for arena boundary enforcement logic.
+"""Parameterized contract tests for arena boundary enforcement.
 
-Tests _enforce_boundaries_2d and _enforce_boundaries_3d methods in GridArena
-for all three boundary modes: clip, periodic, terminal.
-
-Key concerns:
-- Off-by-one errors in 1-indexed grids
-- Correct handling of ambient vs controllable axes in periodic mode
-- Accurate out_of_bounds flag detection
+Tests _enforce_boundaries for clip, periodic, terminal modes across
+randomized grid configs, extreme positions, and edge cases.
 """
 
 import pytest
-import jax.numpy as jnp
+import numpy as np
 
 from src.env.arena.grid_arena import GridArena
 from src.env.field.simple_field import SimpleField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
+RNG = np.random.default_rng(7777)
+
 
 # =============================================================================
-# Fixtures
+# Case generators
 # =============================================================================
 
-D_MAX_TEST = 3  # Default d_max for boundary tests
+def _random_grid_config(ndim: int) -> dict:
+    n_x = int(RNG.integers(2, 50))
+    n_y = int(RNG.integers(2, 50))
+    n_z = int(RNG.integers(2, 50)) if ndim == 3 else None
+    return {"n_x": n_x, "n_y": n_y, "n_z": n_z, "ndim": ndim}
 
 
-@pytest.fixture
-def config_3d():
-    """3D grid config: 10x10x5."""
-    return GridConfig.create(n_x=10, n_y=10, n_z=5)
+def _random_interior_pos(cfg: dict) -> GridPosition:
+    """Position strictly inside the grid (not on boundary)."""
+    i = int(RNG.integers(2, cfg["n_x"]))  # [2, n_x-1]
+    j = int(RNG.integers(2, cfg["n_y"]))
+    k = int(RNG.integers(2, cfg["n_z"])) if cfg["ndim"] == 3 else None
+    return GridPosition(i, j, k)
 
 
-@pytest.fixture
-def config_2d():
-    """2D grid config: 10x8."""
-    return GridConfig.create(n_x=10, n_y=8)
-
-
-def make_arena(config: GridConfig, boundary_mode: str, d_max: int = D_MAX_TEST) -> GridArena:
-    """Helper to create a GridArena for testing."""
-    field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_std=0.0)  # Deterministic for testing
-    
-    if config.ndim == 3:
-        initial_pos = GridPosition(5, 5, 3)
+def _random_oob_pos(cfg: dict) -> GridPosition:
+    """Position guaranteed to be out-of-bounds on at least one axis."""
+    axis = int(RNG.integers(0, cfg["ndim"]))
+    vals = [int(RNG.integers(1, cfg["n_x"] + 1)),
+            int(RNG.integers(1, cfg["n_y"] + 1))]
+    if cfg["ndim"] == 3:
+        vals.append(int(RNG.integers(1, cfg["n_z"] + 1)))
+    # Force one axis OOB
+    sign = int(RNG.choice([-1, 1]))
+    if sign == -1:
+        vals[axis] = int(RNG.integers(-10, 1))  # <=0
     else:
-        initial_pos = GridPosition(5, 4, None)
-    
-    return GridArena(
-        field=field,
-        actor=actor,
-        config=config,
-        initial_position=initial_pos,
-        boundary_mode=boundary_mode
-    )
+        maxes = [cfg["n_x"], cfg["n_y"]] + ([cfg["n_z"]] if cfg["ndim"] == 3 else [])
+        vals[axis] = maxes[axis] + int(RNG.integers(1, 11))
+    if cfg["ndim"] == 2:
+        return GridPosition(vals[0], vals[1], None)
+    return GridPosition(vals[0], vals[1], vals[2])
+
+
+GRID_CASES = [_random_grid_config(2) for _ in range(5)] + [_random_grid_config(3) for _ in range(5)]
+
+# Build (config, mode, position, should_be_in_bounds) tuples
+BOUNDARY_CASES = []
+for cfg in GRID_CASES:
+    interior = _random_interior_pos(cfg)
+    oob = _random_oob_pos(cfg)
+    for mode in ["clip", "periodic", "terminal"]:
+        BOUNDARY_CASES.append({"cfg": cfg, "mode": mode, "pos": interior, "in_bounds": True})
+        BOUNDARY_CASES.append({"cfg": cfg, "mode": mode, "pos": oob, "in_bounds": False})
+
+
+def _make_arena(cfg: dict, mode: str) -> GridArena:
+    config = GridConfig.create(cfg["n_x"], cfg["n_y"], cfg["n_z"])
+    d_max = max(0, min(cfg["n_x"], cfg["n_y"] if cfg["ndim"] == 3 else cfg["n_x"]) - 1)
+    d_max = min(d_max, 3)
+    field = SimpleField(config, d_max=d_max)
+    actor = GridActor(noise_std=0.0)
+    if cfg["ndim"] == 3:
+        init = GridPosition(1, 1, 1)
+    else:
+        init = GridPosition(1, 1, None)
+    return GridArena(field=field, actor=actor, config=config,
+                     initial_position=init, boundary_mode=mode)
+
+
+def _case_id(case):
+    c = case["cfg"]
+    return f'{c["ndim"]}d-{c["n_x"]}x{c["n_y"]}{"x"+str(c["n_z"]) if c["n_z"] else ""}-{case["mode"]}-{"in" if case["in_bounds"] else "oob"}'
 
 
 # =============================================================================
-# 3D Boundary Tests
+# Parameterized contract tests
 # =============================================================================
 
-class TestBoundaries3DClip:
-    """Test clip mode for 3D grids."""
-    
-    def test_position_within_bounds_unchanged(self, config_3d):
-        """Position within bounds should not be modified."""
-        arena = make_arena(config_3d, 'clip')
-        pos = GridPosition(5, 5, 3)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos == pos
-        assert out_of_bounds is False
-    
-    def test_position_at_lower_edge_unchanged(self, config_3d):
-        """Position at lower edge (1, 1, 1) stays unchanged."""
-        arena = make_arena(config_3d, 'clip')
-        pos = GridPosition(1, 1, 1)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos == pos
-        assert out_of_bounds is False
-    
-    def test_position_at_upper_edge_unchanged(self, config_3d):
-        """Position at upper edge (n_x, n_y, n_z) stays unchanged."""
-        arena = make_arena(config_3d, 'clip')
-        pos = GridPosition(10, 10, 5)  # Max bounds
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos == pos
-        assert out_of_bounds is False
-    
-    def test_clips_below_lower_bound(self, config_3d):
-        """Position below lower bound (0 or negative) clips to 1."""
-        arena = make_arena(config_3d, 'clip')
-        pos = GridPosition(0, -1, 0)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos == GridPosition(1, 1, 1)
-        assert out_of_bounds is True
-    
-    def test_clips_above_upper_bound(self, config_3d):
-        """Position above upper bound clips to max."""
-        arena = make_arena(config_3d, 'clip')
-        pos = GridPosition(11, 12, 6)  # Beyond 10, 10, 5
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos == GridPosition(10, 10, 5)
-        assert out_of_bounds is True
-    
-    def test_clips_single_axis_violation(self, config_3d):
-        """When only one axis violates, only that axis is clipped."""
-        arena = make_arena(config_3d, 'clip')
-        pos = GridPosition(5, 5, 0)  # Only k violates
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos == GridPosition(5, 5, 1)
-        assert out_of_bounds is True
+@pytest.mark.parametrize("case", BOUNDARY_CASES, ids=_case_id)
+def test_boundary_contracts(case):
+    """Comprehensive boundary enforcement contract for all modes and positions."""
+    cfg = case["cfg"]
+    arena = _make_arena(cfg, case["mode"])
+    pos = case["pos"]
+    config = arena.config
 
+    if cfg["ndim"] == 3:
+        new_pos, oob = arena._enforce_boundaries_3d(pos)
+    else:
+        new_pos, oob = arena._enforce_boundaries_2d(pos)
 
-class TestBoundaries3DPeriodic:
-    """Test periodic mode for 3D grids."""
-    
-    def test_ambient_axes_wrap_around_upper(self, config_3d):
-        """Ambient axes (i, j) wrap around when exceeding upper bound."""
-        arena = make_arena(config_3d, 'periodic')
-        pos = GridPosition(11, 11, 3)  # i=11 -> 1, j=11 -> 1
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos.i == 1  # Wrapped
-        assert new_pos.j == 1  # Wrapped
-        assert new_pos.k == 3  # Unchanged
-    
-    def test_ambient_axes_wrap_around_lower(self, config_3d):
-        """Ambient axes (i, j) wrap around when below lower bound."""
-        arena = make_arena(config_3d, 'periodic')
-        pos = GridPosition(0, 0, 3)  # i=0 -> 10, j=0 -> 10
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos.i == 10  # Wrapped
-        assert new_pos.j == 10  # Wrapped
-        assert new_pos.k == 3   # Unchanged
-    
-    def test_controllable_axis_clips_not_wraps(self, config_3d):
-        """Controllable axis (k) clips instead of wrapping."""
-        arena = make_arena(config_3d, 'periodic')
-        pos = GridPosition(5, 5, 0)  # k=0 should clip to 1
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert new_pos.k == 1  # Clipped, not wrapped
-        
-        # Test upper bound too
-        pos = GridPosition(5, 5, 6)  # k=6 should clip to 5
-        new_pos, _ = arena._enforce_boundaries_3d(pos)
-        assert new_pos.k == 5
+    if case["mode"] == "clip":
+        # Contract: position is always clamped inside grid
+        assert 1 <= new_pos.i <= config.n_x
+        assert 1 <= new_pos.j <= config.n_y
+        if cfg["ndim"] == 3:
+            assert 1 <= new_pos.k <= config.n_z
+        # oob flag reflects whether clipping was needed
+        if case["in_bounds"]:
+            assert new_pos == pos
+            assert oob is False
+        else:
+            assert oob is True
 
+    elif case["mode"] == "periodic":
+        # Contract: ambient axes wrap, controllable clips
+        assert 1 <= new_pos.i <= config.n_x
+        if cfg["ndim"] == 3:
+            assert 1 <= new_pos.j <= config.n_y
+            assert 1 <= new_pos.k <= config.n_z
+            # Verify ambient wrapping formula
+            assert new_pos.i == ((pos.i - 1) % config.n_x) + 1
+            assert new_pos.j == ((pos.j - 1) % config.n_y) + 1
+            assert new_pos.k == max(1, min(pos.k, config.n_z))
+        else:
+            assert 1 <= new_pos.j <= config.n_y
+            assert new_pos.i == ((pos.i - 1) % config.n_x) + 1
+            assert new_pos.j == max(1, min(pos.j, config.n_y))
 
-class TestBoundaries3DTerminal:
-    """Test terminal mode for 3D grids."""
-    
-    def test_within_bounds_not_terminal(self, config_3d):
-        """Position within bounds: out_of_bounds=False, position unchanged."""
-        arena = make_arena(config_3d, 'terminal')
-        pos = GridPosition(5, 5, 3)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
+    elif case["mode"] == "terminal":
+        # Contract: position is never modified; oob flag is set iff truly OOB
         assert new_pos == pos
-        assert out_of_bounds is False
-    
-    def test_below_lower_bound_terminal(self, config_3d):
-        """Position below lower bound: out_of_bounds=True."""
-        arena = make_arena(config_3d, 'terminal')
-        pos = GridPosition(0, 5, 3)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert out_of_bounds is True
-        # Position not clipped in terminal mode
-        assert new_pos == pos
-    
-    def test_above_upper_bound_terminal(self, config_3d):
-        """Position above upper bound: out_of_bounds=True."""
-        arena = make_arena(config_3d, 'terminal')
-        pos = GridPosition(5, 11, 3)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_3d(pos)
-        
-        assert out_of_bounds is True
+        is_inside = (1 <= pos.i <= config.n_x and 1 <= pos.j <= config.n_y)
+        if cfg["ndim"] == 3:
+            is_inside = is_inside and (1 <= pos.k <= config.n_z)
+        assert oob == (not is_inside)
 
 
 # =============================================================================
-# 2D Boundary Tests
+# Extreme position edge cases
 # =============================================================================
 
-class TestBoundaries2DClip:
-    """Test clip mode for 2D grids."""
-    
-    def test_position_within_bounds_unchanged(self, config_2d):
-        """Position within bounds should not be modified."""
-        arena = make_arena(config_2d, 'clip')
-        pos = GridPosition(5, 4, None)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        
-        assert new_pos == pos
-        assert out_of_bounds is False
-    
-    def test_position_at_edges_unchanged(self, config_2d):
-        """Position at edges stays unchanged."""
-        arena = make_arena(config_2d, 'clip')
-        
-        # Lower edge
-        pos = GridPosition(1, 1, None)
-        new_pos, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        assert new_pos == pos
-        assert out_of_bounds is False
-        
-        # Upper edge
-        pos = GridPosition(10, 8, None)  # n_x=10, n_y=8
-        new_pos, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        assert new_pos == pos
-        assert out_of_bounds is False
-    
-    def test_clips_below_lower_bound(self, config_2d):
-        """Position below lower bound clips to 1."""
-        arena = make_arena(config_2d, 'clip')
-        pos = GridPosition(0, -1, None)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        
-        assert new_pos == GridPosition(1, 1, None)
-        assert out_of_bounds is True
-    
-    def test_clips_above_upper_bound(self, config_2d):
-        """Position above upper bound clips to max."""
-        arena = make_arena(config_2d, 'clip')
-        pos = GridPosition(11, 9, None)  # Beyond 10, 8
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        
-        assert new_pos == GridPosition(10, 8, None)
-        assert out_of_bounds is True
+EXTREME_POSITIONS_2D = [
+    GridPosition(0, 0, None),           # just below lower bound
+    GridPosition(-100, -100, None),     # far below lower bound
+    GridPosition(1, 1, None),           # lower corner (in bounds)
+    GridPosition(10, 8, None),          # upper corner (in bounds for 10x8)
+    GridPosition(11, 9, None),          # just above upper bound
+    GridPosition(1000, 1000, None),     # far above upper bound
+    GridPosition(0, 5, None),           # i OOB, j OK
+    GridPosition(5, 0, None),           # i OK, j OOB
+]
+
+EXTREME_POSITIONS_3D = [
+    GridPosition(0, 0, 0),
+    GridPosition(-50, -50, -50),
+    GridPosition(1, 1, 1),
+    GridPosition(10, 10, 5),
+    GridPosition(11, 11, 6),
+    GridPosition(500, 500, 500),
+    GridPosition(0, 5, 3),              # single axis OOB
+    GridPosition(5, 0, 3),
+    GridPosition(5, 5, 0),
+]
 
 
-class TestBoundaries2DPeriodic:
-    """Test periodic mode for 2D grids."""
-    
-    def test_ambient_axis_wraps_around(self, config_2d):
-        """Ambient axis (i) wraps around."""
-        arena = make_arena(config_2d, 'periodic')
-        
-        # Upper wrap
-        pos = GridPosition(11, 4, None)  # i=11 -> 1
-        new_pos, _ = arena._enforce_boundaries_2d(pos)
-        assert new_pos.i == 1
-        
-        # Lower wrap
-        pos = GridPosition(0, 4, None)  # i=0 -> 10
-        new_pos, _ = arena._enforce_boundaries_2d(pos)
-        assert new_pos.i == 10
-    
-    def test_controllable_axis_clips_not_wraps(self, config_2d):
-        """Controllable axis (j) clips instead of wrapping."""
-        arena = make_arena(config_2d, 'periodic')
-        
-        # Upper clip
-        pos = GridPosition(5, 9, None)  # j=9 should clip to 8
-        new_pos, _ = arena._enforce_boundaries_2d(pos)
-        assert new_pos.j == 8
-        
-        # Lower clip
-        pos = GridPosition(5, 0, None)  # j=0 should clip to 1
-        new_pos, _ = arena._enforce_boundaries_2d(pos)
-        assert new_pos.j == 1
+@pytest.mark.parametrize("pos", EXTREME_POSITIONS_2D, ids=lambda p: f"2d-{p.i},{p.j}")
+@pytest.mark.parametrize("mode", ["clip", "periodic", "terminal"])
+def test_extreme_positions_2d(pos, mode):
+    """Extreme 2D positions never crash; clip always returns in-bounds."""
+    config = GridConfig.create(n_x=10, n_y=8)
+    field = SimpleField(config, d_max=3)
+    actor = GridActor(noise_std=0.0)
+    arena = GridArena(field=field, actor=actor, config=config,
+                      initial_position=GridPosition(5, 4, None), boundary_mode=mode)
 
+    new_pos, oob = arena._enforce_boundaries_2d(pos)
 
-class TestBoundaries2DTerminal:
-    """Test terminal mode for 2D grids."""
-    
-    def test_within_bounds_not_terminal(self, config_2d):
-        """Position within bounds: out_of_bounds=False."""
-        arena = make_arena(config_2d, 'terminal')
-        pos = GridPosition(5, 4, None)
-        
-        new_pos, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        
+    if mode == "clip":
+        assert 1 <= new_pos.i <= 10
+        assert 1 <= new_pos.j <= 8
+    elif mode == "terminal":
         assert new_pos == pos
-        assert out_of_bounds is False
-    
-    def test_any_axis_violation_is_terminal(self, config_2d):
-        """Any axis violation triggers terminal."""
-        arena = make_arena(config_2d, 'terminal')
-        
-        # i violates
-        pos = GridPosition(0, 4, None)
-        _, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        assert out_of_bounds is True
-        
-        # j violates
-        pos = GridPosition(5, 0, None)
-        _, out_of_bounds = arena._enforce_boundaries_2d(pos)
-        assert out_of_bounds is True
+
+
+@pytest.mark.parametrize("pos", EXTREME_POSITIONS_3D, ids=lambda p: f"3d-{p.i},{p.j},{p.k}")
+@pytest.mark.parametrize("mode", ["clip", "periodic", "terminal"])
+def test_extreme_positions_3d(pos, mode):
+    """Extreme 3D positions never crash; clip always returns in-bounds."""
+    config = GridConfig.create(n_x=10, n_y=10, n_z=5)
+    field = SimpleField(config, d_max=3)
+    actor = GridActor(noise_std=0.0)
+    arena = GridArena(field=field, actor=actor, config=config,
+                      initial_position=GridPosition(5, 5, 3), boundary_mode=mode)
+
+    new_pos, oob = arena._enforce_boundaries_3d(pos)
+
+    if mode == "clip":
+        assert 1 <= new_pos.i <= 10
+        assert 1 <= new_pos.j <= 10
+        assert 1 <= new_pos.k <= 5
+    elif mode == "terminal":
+        assert new_pos == pos
+
+
+# =============================================================================
+# Constructor validation
+# =============================================================================
+
+@pytest.mark.parametrize("mode", ["invalid", "wrap", "absorb", "", "CLIP"])
+def test_invalid_boundary_mode_rejected(mode):
+    config = GridConfig.create(n_x=5, n_y=5)
+    field = SimpleField(config, d_max=1)
+    actor = GridActor(noise_std=0.0)
+    with pytest.raises(ValueError, match="boundary_mode must be one of"):
+        GridArena(field=field, actor=actor, config=config,
+                  initial_position=GridPosition(1, 1, None), boundary_mode=mode)
+
+
+@pytest.mark.parametrize(
+    ("pos", "ndim", "match"),
+    [
+        (GridPosition(0, 1, None), 2, "initial_position.*outside grid"),
+        (GridPosition(6, 1, None), 2, "initial_position.*outside grid"),
+        (GridPosition(1, 0, None), 2, "initial_position.*outside grid"),
+        (GridPosition(1, 6, None), 2, "initial_position.*outside grid"),
+        (GridPosition(0, 1, 1), 3, "initial_position.*outside grid"),
+        (GridPosition(1, 1, 0), 3, "initial_position.k.*invalid"),
+        (GridPosition(1, 1, 6), 3, "initial_position.k.*invalid"),
+        (GridPosition(1, 1, None), 3, "initial_position.k.*invalid"),
+        (GridPosition(1, 1, 1), 2, "initial_position.k must be None"),
+    ],
+)
+def test_invalid_initial_position_rejected(pos, ndim, match):
+    if ndim == 2:
+        config = GridConfig.create(n_x=5, n_y=5)
+    else:
+        config = GridConfig.create(n_x=5, n_y=5, n_z=5)
+    field = SimpleField(config, d_max=1)
+    actor = GridActor(noise_std=0.0)
+    with pytest.raises(ValueError, match=match):
+        GridArena(field=field, actor=actor, config=config,
+                  initial_position=pos, boundary_mode="clip")

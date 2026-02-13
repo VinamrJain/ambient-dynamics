@@ -1,394 +1,234 @@
-"""Tests for NavigationArena reward computation.
+"""Parameterized contract tests for NavigationArena reward computation.
 
-Tests compute_reward() and _compute_distance() methods covering:
-- Distance calculation for 2D and 3D
-- Vicinity detection and bonus
-- Distance-based penalties outside vicinity
-- Exponential decay within vicinity
-- Cumulative reward tracking
+Covers distance calculation, vicinity detection, decay, cumulative tracking,
+and constructor validation — for both 2D and 3D across randomized scenarios.
 """
 
 import pytest
 import numpy as np
 import jax
-import jax.numpy as jnp
 
 from src.env.arena.navigation_arena import NavigationArena
 from src.env.field.simple_field import SimpleField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
+RNG = np.random.default_rng(9999)
+
 
 # =============================================================================
-# Fixtures
+# Helpers
 # =============================================================================
 
-D_MAX_TEST = 3  # Default d_max for reward tests
-
-
-@pytest.fixture
-def config_3d():
-    """3D grid config: 10x10x10."""
-    return GridConfig.create(n_x=10, n_y=10, n_z=10)
-
-
-@pytest.fixture
-def config_2d():
-    """2D grid config: 10x10."""
-    return GridConfig.create(n_x=10, n_y=10)
-
-
-def make_navigation_arena(
-    config: GridConfig,
-    initial_position: GridPosition,
-    target_position: GridPosition,
-    vicinity_radius: float = 2.0,
-    distance_reward_weight: float = -0.1,
-    vicinity_bonus: float = 10.0,
-    step_penalty: float = -0.5,
-    use_distance_decay: bool = False,
-    decay_rate: float = 0.5,
-    d_max: int = D_MAX_TEST
+def _make_arena(
+    ndim: int, n: int, initial: GridPosition, target: GridPosition, *,
+    vicinity_radius: float = 2.0, vicinity_bonus: float = 10.0,
+    step_penalty: float = -0.5, distance_reward_weight: float = -0.1,
+    use_distance_decay: bool = False, decay_rate: float = 0.5,
+    d_max: int = 1
 ) -> NavigationArena:
-    """Helper to create a NavigationArena for testing."""
+    if ndim == 3:
+        config = GridConfig.create(n, n, n)
+    else:
+        config = GridConfig.create(n, n)
     field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_std=0.0)
-    
     return NavigationArena(
-        field=field,
-        actor=actor,
-        config=config,
-        initial_position=initial_position,
-        target_position=target_position,
-        vicinity_radius=vicinity_radius,
-        boundary_mode='clip',
+        field=field, actor=actor, config=config,
+        initial_position=initial, target_position=target,
+        vicinity_radius=vicinity_radius, boundary_mode="clip",
         distance_reward_weight=distance_reward_weight,
-        vicinity_bonus=vicinity_bonus,
-        step_penalty=step_penalty,
+        vicinity_bonus=vicinity_bonus, step_penalty=step_penalty,
         terminate_on_reach=False,
-        use_distance_decay=use_distance_decay,
-        decay_rate=decay_rate
+        use_distance_decay=use_distance_decay, decay_rate=decay_rate,
     )
 
 
 # =============================================================================
-# Distance Calculation Tests
+# Parameterized distance + reward contract
 # =============================================================================
 
-class TestDistanceCalculation:
-    """Test _compute_distance for 2D and 3D."""
-    
-    def test_distance_3d_same_position(self, config_3d):
-        """Distance between same positions is 0."""
-        pos = GridPosition(5, 5, 5)
-        arena = make_navigation_arena(config_3d, pos, pos)
-        
-        distance = arena._compute_distance(pos, pos)
-        
-        assert distance == 0.0
-    
-    def test_distance_3d_unit_displacement(self, config_3d):
-        """Distance for unit displacement on each axis."""
-        target = GridPosition(5, 5, 5)
-        arena = make_navigation_arena(config_3d, target, target)
-        
-        # Unit displacement on i
-        pos = GridPosition(6, 5, 5)
-        assert arena._compute_distance(pos, target) == 1.0
-        
-        # Unit displacement on j
-        pos = GridPosition(5, 6, 5)
-        assert arena._compute_distance(pos, target) == 1.0
-        
-        # Unit displacement on k
-        pos = GridPosition(5, 5, 6)
-        assert arena._compute_distance(pos, target) == 1.0
-    
-    def test_distance_3d_diagonal(self, config_3d):
-        """Distance for diagonal displacement in 3D."""
-        pos1 = GridPosition(1, 1, 1)
-        pos2 = GridPosition(4, 5, 6)  # Delta: (3, 4, 5)
-        arena = make_navigation_arena(config_3d, pos1, pos2)
-        
-        # sqrt(3^2 + 4^2 + 5^2) = sqrt(9 + 16 + 25) = sqrt(50)
-        expected = np.sqrt(50)
-        distance = arena._compute_distance(pos1, pos2)
-        
-        assert np.isclose(distance, expected)
-    
-    def test_distance_2d_same_position(self, config_2d):
-        """Distance between same positions is 0 in 2D."""
-        pos = GridPosition(5, 5, None)
-        arena = make_navigation_arena(config_2d, pos, pos)
-        
-        distance = arena._compute_distance(pos, pos)
-        
-        assert distance == 0.0
-    
-    def test_distance_2d_unit_displacement(self, config_2d):
-        """Distance for unit displacement on each axis in 2D."""
-        target = GridPosition(5, 5, None)
-        arena = make_navigation_arena(config_2d, target, target)
-        
-        # Unit displacement on i
-        pos = GridPosition(6, 5, None)
-        assert arena._compute_distance(pos, target) == 1.0
-        
-        # Unit displacement on j
-        pos = GridPosition(5, 6, None)
-        assert arena._compute_distance(pos, target) == 1.0
-    
-    def test_distance_2d_diagonal(self, config_2d):
-        """Distance for diagonal displacement in 2D (classic 3-4-5 triangle)."""
-        pos1 = GridPosition(1, 1, None)
-        pos2 = GridPosition(4, 5, None)  # Delta: (3, 4)
-        arena = make_navigation_arena(config_2d, pos1, pos2)
-        
-        # sqrt(3^2 + 4^2) = sqrt(9 + 16) = 5
-        expected = 5.0
-        distance = arena._compute_distance(pos1, pos2)
-        
-        assert distance == expected
+REWARD_CASES = [
+    # (ndim, initial, target, vicinity_radius, description)
+    (2, (5, 5), (5, 5), 2.0, "2d-at-target"),
+    (2, (1, 1), (5, 5), 2.0, "2d-far-from-target"),
+    (2, (7, 5), (5, 5), 2.0, "2d-on-boundary"),       # dist = 2.0 exactly
+    (2, (8, 5), (5, 5), 2.0, "2d-just-outside"),       # dist = 3.0
+    (2, (1, 1), (10, 10), 1.0, "2d-max-distance"),
+    (3, (5, 5, 5), (5, 5, 5), 2.0, "3d-at-target"),
+    (3, (1, 1, 1), (5, 5, 5), 2.0, "3d-far-from-target"),
+    (3, (7, 5, 5), (5, 5, 5), 2.0, "3d-on-boundary"),  # dist = 2.0
+    (3, (8, 5, 5), (5, 5, 5), 2.0, "3d-just-outside"),
+    (3, (1, 1, 1), (10, 10, 10), 0.5, "3d-max-distance"),
+]
 
 
-# =============================================================================
-# Vicinity Detection Tests
-# =============================================================================
+@pytest.mark.parametrize(
+    ("ndim", "init_tup", "targ_tup", "radius", "desc"), REWARD_CASES,
+    ids=lambda *a: a[-1] if isinstance(a[-1], str) else str(a)
+)
+def test_reward_contracts(ndim, init_tup, targ_tup, radius, desc):
+    """Reward contracts: distance, vicinity detection, penalty/bonus signs."""
+    n = 10
+    if ndim == 2:
+        initial = GridPosition(init_tup[0], init_tup[1], None)
+        target = GridPosition(targ_tup[0], targ_tup[1], None)
+    else:
+        initial = GridPosition(*init_tup)
+        target = GridPosition(*targ_tup)
 
-class TestVicinityDetection:
-    """Test reward computation based on vicinity status."""
-    
-    def test_inside_vicinity_gets_bonus(self, config_3d):
-        """Position inside vicinity gets vicinity bonus."""
-        target = GridPosition(5, 5, 5)
-        initial = GridPosition(5, 5, 5)  # Start at target
-        arena = make_navigation_arena(
-            config_3d, initial, target,
-            vicinity_radius=2.0,
-            vicinity_bonus=10.0
-        )
-        
-        # Reset and compute reward (position is at target)
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        assert reward == 10.0
-    
-    def test_outside_vicinity_gets_penalty(self, config_3d):
-        """Position outside vicinity gets distance + step penalty."""
-        target = GridPosition(5, 5, 5)
-        initial = GridPosition(1, 1, 1)  # Far from target
-        arena = make_navigation_arena(
-            config_3d, initial, target,
-            vicinity_radius=2.0,
-            distance_reward_weight=-0.1,
-            step_penalty=-0.5
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        # Distance from (1,1,1) to (5,5,5) = sqrt(48) ~ 6.93
-        distance = np.sqrt(48)
-        expected = (-0.1 * distance) + (-0.5)
-        
-        assert np.isclose(reward, expected)
-    
-    def test_at_radius_boundary_is_inside(self, config_3d):
-        """Position exactly at radius boundary counts as inside vicinity."""
-        target = GridPosition(5, 5, 5)
-        # Position at exactly radius=2.0 distance
-        initial = GridPosition(7, 5, 5)  # Distance = 2.0 exactly
-        arena = make_navigation_arena(
-            config_3d, initial, target,
-            vicinity_radius=2.0,
-            vicinity_bonus=10.0
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        assert reward == 10.0  # Inside (distance <= radius)
-    
-    def test_just_outside_radius_is_outside(self, config_3d):
-        """Position just outside radius gets penalty."""
-        target = GridPosition(5, 5, 5)
-        # Position at distance > 2.0
-        initial = GridPosition(8, 5, 5)  # Distance = 3.0
-        arena = make_navigation_arena(
-            config_3d, initial, target,
-            vicinity_radius=2.0,
-            vicinity_bonus=10.0,
-            distance_reward_weight=-0.1,
-            step_penalty=-0.5
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        # Should get penalty, not bonus
-        expected = (-0.1 * 3.0) + (-0.5)
-        assert np.isclose(reward, expected)
+    bonus = 50.0
+    weight = -0.2
+    penalty = -1.0
+    arena = _make_arena(ndim, n, initial, target,
+                        vicinity_radius=radius, vicinity_bonus=bonus,
+                        distance_reward_weight=weight, step_penalty=penalty,
+                        d_max=0)  # d_max=0 so field can't move us
 
+    arena.reset(jax.random.PRNGKey(0))
 
-# =============================================================================
-# Distance Decay Tests
-# =============================================================================
+    # Compute expected distance
+    if ndim == 2:
+        dist = np.sqrt((init_tup[0] - targ_tup[0])**2 + (init_tup[1] - targ_tup[1])**2)
+    else:
+        dist = np.sqrt(sum((a - b)**2 for a, b in zip(init_tup, targ_tup)))
 
-class TestDistanceDecay:
-    """Test exponential decay of vicinity bonus."""
-    
-    def test_decay_at_center_gives_full_bonus(self, config_3d):
-        """At center (distance=0), get full vicinity bonus."""
-        target = GridPosition(5, 5, 5)
-        arena = make_navigation_arena(
-            config_3d, target, target,
-            vicinity_radius=3.0,
-            vicinity_bonus=100.0,
-            use_distance_decay=True,
-            decay_rate=0.5
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        # At center: bonus * exp(-0.5 * 0) = 100 * 1 = 100
-        assert reward == 100.0
-    
-    def test_decay_reduces_bonus_with_distance(self, config_3d):
-        """Bonus decays exponentially with distance from center."""
-        target = GridPosition(5, 5, 5)
-        initial = GridPosition(6, 5, 5)  # Distance = 1.0, inside radius=3
-        arena = make_navigation_arena(
-            config_3d, initial, target,
-            vicinity_radius=3.0,
-            vicinity_bonus=100.0,
-            use_distance_decay=True,
-            decay_rate=0.5
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        # At distance=1: bonus * exp(-0.5 * 1) = 100 * exp(-0.5)
-        expected = 100.0 * np.exp(-0.5)
-        assert np.isclose(reward, expected)
-    
-    def test_no_decay_gives_constant_bonus(self, config_3d):
-        """Without decay, bonus is constant anywhere in vicinity."""
-        target = GridPosition(5, 5, 5)
-        initial = GridPosition(6, 5, 5)  # Distance = 1.0
-        arena = make_navigation_arena(
-            config_3d, initial, target,
-            vicinity_radius=3.0,
-            vicinity_bonus=100.0,
-            use_distance_decay=False
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        assert reward == 100.0  # Full bonus regardless of position
+    assert arena._compute_distance(initial, target) == pytest.approx(dist, abs=1e-10)
 
+    reward = arena.compute_reward()
 
-# =============================================================================
-# Cumulative Reward Tests
-# =============================================================================
-
-class TestCumulativeReward:
-    """Test cumulative reward tracking."""
-    
-    def test_cumulative_reward_starts_at_zero(self, config_3d):
-        """Cumulative reward is 0 after reset."""
-        target = GridPosition(5, 5, 5)
-        arena = make_navigation_arena(config_3d, target, target)
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        
-        assert arena.get_cumulative_reward() == 0.0
-    
-    def test_cumulative_reward_accumulates(self, config_3d):
-        """Cumulative reward sums across multiple compute_reward calls."""
-        target = GridPosition(5, 5, 5)
-        arena = make_navigation_arena(
-            config_3d, target, target,
-            vicinity_bonus=10.0
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        
-        # Compute reward 3 times
-        arena.compute_reward()
-        arena.compute_reward()
-        arena.compute_reward()
-        
-        assert arena.get_cumulative_reward() == 30.0
-    
-    def test_target_reached_flag_set_on_first_entry(self, config_3d):
-        """target_reached flag set when first entering vicinity."""
-        target = GridPosition(5, 5, 5)
-        arena = make_navigation_arena(
-            config_3d, target, target,  # Start at target
-            vicinity_radius=2.0
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        
-        assert arena._target_reached is False  # Not yet computed
-        
-        arena.compute_reward()
-        
+    in_vicinity = dist <= radius
+    if in_vicinity:
+        assert reward == pytest.approx(bonus, rel=1e-6)
         assert arena._target_reached is True
+    else:
+        expected = weight * dist + penalty
+        assert reward == pytest.approx(expected, rel=1e-6)
+        assert reward < 0  # penalties are negative
 
 
 # =============================================================================
-# 2D Reward Tests
+# Distance decay contract
 # =============================================================================
 
-class TestReward2D:
-    """Test reward computation in 2D mode."""
-    
-    def test_2d_inside_vicinity_gets_bonus(self, config_2d):
-        """2D: Position inside vicinity gets bonus."""
-        target = GridPosition(5, 5, None)
-        arena = make_navigation_arena(
-            config_2d, target, target,
-            vicinity_radius=2.0,
-            vicinity_bonus=10.0
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        assert reward == 10.0
-    
-    def test_2d_outside_vicinity_gets_penalty(self, config_2d):
-        """2D: Position outside vicinity gets penalty."""
-        target = GridPosition(5, 5, None)
-        initial = GridPosition(1, 1, None)  # Distance = sqrt(32) ~ 5.66
-        arena = make_navigation_arena(
-            config_2d, initial, target,
-            vicinity_radius=2.0,
-            distance_reward_weight=-0.1,
-            step_penalty=-0.5
-        )
-        
-        rng_key = jax.random.PRNGKey(0)
-        arena.reset(rng_key)
-        reward = arena.compute_reward()
-        
-        distance = np.sqrt(32)  # sqrt((5-1)^2 + (5-1)^2)
-        expected = (-0.1 * distance) + (-0.5)
-        
-        assert np.isclose(reward, expected)
+DECAY_CASES = [
+    # (ndim, initial, target, decay_rate, description)
+    (2, (5, 5), (5, 5), 0.5, "2d-center"),
+    (2, (6, 5), (5, 5), 0.5, "2d-dist1"),
+    (2, (6, 5), (5, 5), 2.0, "2d-dist1-fast-decay"),
+    (3, (5, 5, 5), (5, 5, 5), 0.5, "3d-center"),
+    (3, (6, 5, 5), (5, 5, 5), 0.5, "3d-dist1"),
+    (3, (6, 5, 5), (5, 5, 5), 0.0, "3d-zero-decay"),  # exp(0) = 1
+]
+
+
+@pytest.mark.parametrize(
+    ("ndim", "init_tup", "targ_tup", "decay_rate", "desc"), DECAY_CASES,
+    ids=lambda *a: a[-1] if isinstance(a[-1], str) else str(a)
+)
+def test_decay_contracts(ndim, init_tup, targ_tup, decay_rate, desc):
+    """Vicinity bonus with exponential decay."""
+    n = 10
+    bonus = 100.0
+    if ndim == 2:
+        initial = GridPosition(init_tup[0], init_tup[1], None)
+        target = GridPosition(targ_tup[0], targ_tup[1], None)
+        dist = np.sqrt((init_tup[0]-targ_tup[0])**2 + (init_tup[1]-targ_tup[1])**2)
+    else:
+        initial = GridPosition(*init_tup)
+        target = GridPosition(*targ_tup)
+        dist = np.sqrt(sum((a-b)**2 for a, b in zip(init_tup, targ_tup)))
+
+    arena = _make_arena(ndim, n, initial, target,
+                        vicinity_radius=3.0, vicinity_bonus=bonus,
+                        use_distance_decay=True, decay_rate=decay_rate, d_max=0)
+    arena.reset(jax.random.PRNGKey(0))
+    reward = arena.compute_reward()
+
+    expected = bonus * np.exp(-decay_rate * dist)
+    assert reward == pytest.approx(expected, rel=1e-6)
+
+
+# =============================================================================
+# Cumulative reward + reset contract
+# =============================================================================
+
+@pytest.mark.parametrize("ndim", [2, 3])
+def test_cumulative_reward_and_reset(ndim):
+    """Cumulative reward accumulates then resets to zero."""
+    n = 10
+    if ndim == 2:
+        pos = GridPosition(5, 5, None)
+    else:
+        pos = GridPosition(5, 5, 5)
+
+    arena = _make_arena(ndim, n, pos, pos, vicinity_bonus=7.0, d_max=0)
+    arena.reset(jax.random.PRNGKey(0))
+
+    for k in range(1, 6):
+        arena.compute_reward()
+        assert arena.get_cumulative_reward() == pytest.approx(7.0 * k)
+
+    arena.reset(jax.random.PRNGKey(1))
+    assert arena.get_cumulative_reward() == 0.0
+    assert arena._target_reached is False
+
+
+# =============================================================================
+# Constructor validation
+# =============================================================================
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"vicinity_radius": 0.0}, "vicinity_radius must be positive"),
+        ({"vicinity_radius": -1.0}, "vicinity_radius must be positive"),
+        ({"vicinity_bonus": 0.0}, "vicinity_bonus must be positive"),
+        ({"vicinity_bonus": -5.0}, "vicinity_bonus must be positive"),
+        ({"step_penalty": 0.1}, "step_penalty must be non-positive"),
+        ({"step_penalty": 10.0}, "step_penalty must be non-positive"),
+        ({"distance_reward_weight": 0.1}, "distance_reward_weight must be non-positive"),
+        ({"decay_rate": -0.1}, "decay_rate must be non-negative"),
+    ],
+)
+def test_navigation_arena_rejects_invalid_params(kwargs, match):
+    config = GridConfig.create(n_x=10, n_y=10)
+    field = SimpleField(config, d_max=1)
+    actor = GridActor(noise_std=0.0)
+    defaults = dict(
+        field=field, actor=actor, config=config,
+        initial_position=GridPosition(5, 5, None),
+        target_position=GridPosition(5, 5, None),
+        vicinity_radius=2.0, vicinity_bonus=10.0,
+        step_penalty=-0.5, distance_reward_weight=-0.1,
+        decay_rate=0.5,
+    )
+    defaults.update(kwargs)
+    with pytest.raises(ValueError, match=match):
+        NavigationArena(**defaults)
+
+
+@pytest.mark.parametrize(
+    ("target", "ndim", "match"),
+    [
+        (GridPosition(0, 5, None), 2, "target_position.*outside grid"),
+        (GridPosition(11, 5, None), 2, "target_position.*outside grid"),
+        (GridPosition(5, 0, None), 2, "target_position.*outside grid"),
+        (GridPosition(0, 5, 5), 3, "target_position.*outside grid"),
+        (GridPosition(5, 5, 0), 3, "target_position.k.*outside grid"),
+        (GridPosition(5, 5, 11), 3, "target_position.k.*outside grid"),
+    ],
+)
+def test_navigation_arena_rejects_oob_target(target, ndim, match):
+    if ndim == 2:
+        config = GridConfig.create(n_x=10, n_y=10)
+        init = GridPosition(5, 5, None)
+    else:
+        config = GridConfig.create(n_x=10, n_y=10, n_z=10)
+        init = GridPosition(5, 5, 5)
+    field = SimpleField(config, d_max=1)
+    actor = GridActor(noise_std=0.0)
+    with pytest.raises(ValueError, match=match):
+        NavigationArena(field=field, actor=actor, config=config,
+                        initial_position=init, target_position=target,
+                        vicinity_radius=2.0)
