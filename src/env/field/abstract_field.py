@@ -25,9 +25,11 @@ class AbstractField(ABC):
                    Displacements are clipped to [-d_max, d_max].
         """
         self.config = config
-        self._d_max = d_max
+        self._d_max = int(d_max)
         
-        # Validate d_max against ambient dimensions
+        # Validate d_max type and value
+        if d_max != int(d_max):
+            raise ValueError(f"d_max must be an integer, got {d_max}")
         if d_max < 0:
             raise ValueError("d_max must be non-negative")
         if self.ndim == 3:

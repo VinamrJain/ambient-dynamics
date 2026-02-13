@@ -69,6 +69,31 @@ class NavigationArena(GridArena):
             boundary_mode=boundary_mode
         )
         
+        # Validate navigation parameters
+        if vicinity_radius <= 0.0:
+            raise ValueError(f"vicinity_radius must be positive, got {vicinity_radius}")
+        if vicinity_bonus <= 0.0:
+            raise ValueError(f"vicinity_bonus must be positive, got {vicinity_bonus}")
+        if step_penalty > 0.0:
+            raise ValueError(f"step_penalty must be non-positive, got {step_penalty}")
+        if distance_reward_weight > 0.0:
+            raise ValueError(f"distance_reward_weight must be non-positive, got {distance_reward_weight}")
+        if decay_rate < 0.0:
+            raise ValueError(f"decay_rate must be non-negative, got {decay_rate}")
+        
+        # Validate target position is within grid
+        if not (1 <= target_position.i <= config.n_x and
+                1 <= target_position.j <= config.n_y):
+            raise ValueError(
+                f"target_position {target_position} is outside grid "
+                f"({config.n_x}, {config.n_y}, {config.n_z})"
+            )
+        if config.ndim == 3 and not (1 <= target_position.k <= config.n_z):
+            raise ValueError(
+                f"target_position.k={target_position.k} is outside grid "
+                f"[1, {config.n_z}]"
+            )
+        
         self.target_position = target_position
         self.vicinity_radius = vicinity_radius
         self.distance_reward_weight = distance_reward_weight

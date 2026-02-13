@@ -36,6 +36,9 @@ class GridEnvironment(gym.Env):
         """
         super().__init__()
         
+        if max_steps <= 0:
+            raise ValueError(f"max_steps must be positive, got {max_steps}")
+        
         self.arena = arena
         self.max_steps = max_steps
         self._renderer = renderer

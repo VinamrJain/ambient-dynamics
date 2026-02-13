@@ -67,6 +67,8 @@ class RFFGPField(AbstractField):
             raise ValueError(f"lengthscale must be positive, got {lengthscale}")
         if nu <= 0.0:
             raise ValueError(f"nu must be positive, got {nu}")
+        if num_features != int(num_features):
+            raise ValueError(f"num_features must be an integer, got {num_features}")
         if num_features <= 0:
             raise ValueError(f"num_features must be positive, got {num_features}")
         if noise_std < 0.0:
@@ -75,7 +77,7 @@ class RFFGPField(AbstractField):
         self.sigma = sigma
         self.lengthscale = lengthscale
         self.nu = nu
-        self.num_features = num_features
+        self.num_features = int(num_features)
         self.noise_std = noise_std
         
         # Spatial dimension for frequency sampling

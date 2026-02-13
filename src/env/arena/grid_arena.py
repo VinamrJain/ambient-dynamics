@@ -57,6 +57,26 @@ class GridArena(AbstractArena):
                 f"boundary_mode must be one of {valid_modes}, got {boundary_mode}"
             )
         
+        # Validate initial_position is within grid
+        if not (1 <= initial_position.i <= config.n_x and
+                1 <= initial_position.j <= config.n_y):
+            raise ValueError(
+                f"initial_position {initial_position} is outside grid "
+                f"({config.n_x}, {config.n_y}, {config.n_z})"
+            )
+        if config.ndim == 3 and (
+            initial_position.k is None or
+            not (1 <= initial_position.k <= config.n_z)
+        ):
+            raise ValueError(
+                f"initial_position.k={initial_position.k} is invalid for 3D grid "
+                f"[1, {config.n_z}]"
+            )
+        if config.ndim == 2 and initial_position.k is not None:
+            raise ValueError(
+                f"initial_position.k must be None for 2D grid, got {initial_position.k}"
+            )
+        
         # Arena state (updated in reset and step)
         self.position = initial_position
         self.last_position = initial_position

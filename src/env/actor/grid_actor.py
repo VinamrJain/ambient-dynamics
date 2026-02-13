@@ -148,7 +148,7 @@ class GridActor(AbstractActor):
         pmf[0] = norm.cdf((-z + 0.5 - mean) / sigma)
         
         # Interior bins: P(k - 0.5 <= continuous < k + 0.5)
-        if z > 1:
+        if z > 0:
             interior_k = np.arange(-z + 1, z)
             upper = (interior_k + 0.5 - mean) / sigma
             lower = (interior_k - 0.5 - mean) / sigma
