@@ -40,19 +40,22 @@ class AbstractActor(ABC):
         """Get full PMF over controllable axis displacements for all actions.
         
         Returns:
-            PMF array of shape (3, 2*c_max+1) where entry [a, j] is:
-                P(controllable_displacement = j - c_max | action = a)
+            PMF array of shape (3, 2*z_max+1) where entry [a, j] is:
+                P(controllable_displacement = j - z_max | action = a)
             
             where:
                 - a ∈ {0, 1, 2} is action index (0=decrease, 1=stay, 2=increase)
-                - j ∈ {0, ..., 2*c_max} is displacement index
-                - c_max is the maximum controllable displacement magnitude
+                - j ∈ {0, ..., 2*z_max} is displacement index
+                - z_max is the actor's maximum controllable displacement magnitude
             
-            Example for c_max=2:
-                - Shape: (3, 5) for displacements {-2, -1, 0, +1, +2}
-                - pmf[0, 0] = P(d=-2 | action=0=decrease)
-                - pmf[1, 2] = P(d=0 | action=1=stay)
-                - pmf[2, 4] = P(d=+2 | action=2=increase)
+            Example for z_max=2 (displacements in {-2, -1, 0, +1, +2}):
+                pmf has shape (3, 5) where columns index d + z_max
+                
+                pmf[0, 0] = P(d=-2 | action=0)  # decrease action, max negative displacement
+                pmf[1, 2] = P(d=0 | action=1)   # stay action, zero displacement
+                pmf[2, 4] = P(d=+2 | action=2)  # increase action, max positive displacement
+                
+                Each row sums to 1.0.
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support controllable displacement PMF analysis."

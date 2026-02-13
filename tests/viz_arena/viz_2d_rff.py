@@ -28,7 +28,7 @@ def run_2d_visualization_rff():
     
     # Configuration: 2D grid
     config = GridConfig.create(n_x=100, n_y=80)
-    d_max = 8
+    d_max = 20
     
     print(f"\nGrid configuration:")
     print(f"  Dimensions: {config.ndim}D")
@@ -36,8 +36,8 @@ def run_2d_visualization_rff():
     print(f"  Max displacement: {d_max}")
     
     # GP Field parameters
-    sigma = 3.0
-    lengthscale = 15.0
+    sigma = 5
+    lengthscale = 10
     nu = 2.5
     
     print(f"\nRFF GP Field parameters:")
@@ -60,7 +60,7 @@ def run_2d_visualization_rff():
         sigma=sigma, lengthscale=lengthscale, nu=nu,
         num_features=500, noise_std=0.5
     )
-    actor = GridActor(noise_prob=0.1)
+    actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
         field=field,

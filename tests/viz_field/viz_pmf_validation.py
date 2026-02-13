@@ -183,7 +183,7 @@ def validate_pmf_2d_suite(
         {
             "name": "interior",
             "u_mean": 0.2,
-            "noise_std": 0.9,
+            "noise_std": 3,
             "seed": 1,
             "n_samples": n_samples,
             "note": "Mean away from boundaries; should look near-Gaussian around center bins.",
@@ -191,7 +191,7 @@ def validate_pmf_2d_suite(
         {
             "name": "near_+dmax_boundary",
             "u_mean": d_max - 0.25,
-            "noise_std": 0.9,
+            "noise_std": 2,
             "seed": 2,
             "n_samples": n_samples,
             "note": "Tests accumulation of right-tail mass at +d_max.",

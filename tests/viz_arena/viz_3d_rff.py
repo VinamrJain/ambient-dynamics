@@ -64,7 +64,7 @@ def run_3d_visualization_rff():
         sigma=sigma, lengthscale=lengthscale, nu=nu,
         num_features=500, noise_std=0.2
     )
-    actor = GridActor(noise_prob=0.1)
+    actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
         field=field,
@@ -159,7 +159,7 @@ def run_3d_station_keeping_rff():
         sigma=1.0, lengthscale=3.0, nu=2.5,
         num_features=500, noise_std=0.1
     )
-    actor = GridActor(noise_prob=0.1)
+    actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
         field=field,

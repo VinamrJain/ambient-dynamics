@@ -48,7 +48,7 @@ def run_2d_visualization():
     
     # Create components
     field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_prob=0.1)
+    actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
         field=field,

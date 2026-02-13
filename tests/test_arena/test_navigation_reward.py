@@ -52,7 +52,7 @@ def make_navigation_arena(
 ) -> NavigationArena:
     """Helper to create a NavigationArena for testing."""
     field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_prob=0.0)
+    actor = GridActor(noise_std=0.0)
     
     return NavigationArena(
         field=field,

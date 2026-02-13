@@ -40,7 +40,7 @@ def config_2d():
 def make_arena(config: GridConfig, boundary_mode: str, d_max: int = D_MAX_TEST) -> GridArena:
     """Helper to create a GridArena for testing."""
     field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_prob=0.0)  # Deterministic for testing
+    actor = GridActor(noise_std=0.0)  # Deterministic for testing
     
     if config.ndim == 3:
         initial_pos = GridPosition(5, 5, 3)

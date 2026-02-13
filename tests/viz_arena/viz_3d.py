@@ -48,7 +48,7 @@ def run_3d_visualization():
     
     # Create components
     field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_prob=0.1)
+    actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
         field=field,
@@ -149,7 +149,7 @@ def run_3d_station_keeping():
     print(f"  Agent tries to stay within vicinity despite field perturbations")
     
     field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_prob=0.1)
+    actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
         field=field,

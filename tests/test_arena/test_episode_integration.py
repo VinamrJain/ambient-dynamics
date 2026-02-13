@@ -41,7 +41,7 @@ def make_navigation_env(
 ) -> GridEnvironment:
     """Create a NavigationArena-backed GridEnvironment."""
     field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_prob=0.0)  # Deterministic for testing
+    actor = GridActor(noise_std=0.0)  # Deterministic for testing
     
     arena = NavigationArena(
         field=field,
@@ -70,7 +70,7 @@ def make_grid_env(
 ) -> GridEnvironment:
     """Create a basic GridArena-backed GridEnvironment."""
     field = SimpleField(config, d_max=d_max)
-    actor = GridActor(noise_prob=0.0)
+    actor = GridActor(noise_std=0.0)
     
     arena = GridArena(
         field=field,
@@ -372,7 +372,7 @@ class TestTerminationConditions:
         d_max = 2
         
         field = SimpleField(config, d_max=d_max)
-        actor = GridActor(noise_prob=0.0)
+        actor = GridActor(noise_std=0.0)
         
         arena = GridArena(
             field=field,
