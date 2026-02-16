@@ -1,45 +1,63 @@
-"""Basic grid actor implementation with stochastic controllable axis dynamics."""
+"""Grid actor with clipped-Gaussian controllable axis dynamics.
+"""
 
 import numpy as np
 import jax
 import jax.numpy as jnp
+from scipy.stats import norm
 
 from .abstract_actor import AbstractActor
 from ..utils.types import GridPosition
 
 
 class GridActor(AbstractActor):
-    """Basic grid actor with noisy controllable axis dynamics.
+    """Grid actor with clipped-Gaussian controllable axis dynamics.
     
     Supports both 2D and 3D settings:
     - 3D: Controls z-axis (k coordinate)
     - 2D: Controls y-axis (j coordinate)
     
-    
-    - Intended displacement: probability (1 - eps)
-    - One level above intended: probability eps/2
-    - One level below intended: probability eps/2
-    
-    Where eps = noise_prob (total noise probability).
+    Dynamics:
+        Given action a in {0, 1, 2}, intended displacement = scale * (a - 1).
+        Continuous signal: w_tilde = clip(scale*(a-1) + eps, -z_max, z_max), eps ~ N(0, noise_std^2)
+        Discrete displacement: Delta = round(w_tilde)
     """
     
-    def __init__(self, noise_prob: float = 0.1):
+    def __init__(
+        self,
+        scale: float = 1.0,
+        noise_std: float = 0.1,
+        z_max: int = 1
+    ):
         """Initialize grid actor.
         
         Args:
-            noise_prob: Total probability of noise (eps).
-                       Split equally between adjacent levels (eps/2 each).
+            scale: Multiplier for the intended displacement.
+                   Intended displacement = scale * (action - 1).
+            noise_std: Standard deviation of additive Gaussian noise.
+            z_max: Maximum controllable displacement magnitude.
+                   Displacements are clipped to [-z_max, z_max].
         """
         super().__init__()
-        self.noise_prob = float(noise_prob)
         
-        if not 0.0 <= noise_prob <= 1.0:
-            raise ValueError(f"noise_prob must be in [0, 1], got {noise_prob}")
+        if scale <= 0.0:
+            raise ValueError(f"scale must be positive, got {scale}")
+        if noise_std < 0.0:
+            raise ValueError(f"noise_std must be non-negative, got {noise_std}")
+        if z_max < 0:
+            raise ValueError(f"z_max must be non-negative, got {z_max}")
+        
+        self.scale = float(scale)
+        self.noise_std = float(noise_std)
+        self.z_max = int(z_max)
     
     def step_controllable(
         self, position: GridPosition, action: int, rng_key: jnp.ndarray
     ) -> GridPosition:
-        """Apply action on controllable axis with noise (functional/stateless).
+        """Apply action on controllable axis with clipped-Gaussian noise.
+        
+        Sampling: w_tilde = clip(scale*(action-1) + eps, -z_max, z_max)  eps ~ N(0, noise_std^2)
+                  Delta = round(w_tilde)
         
         Args:
             position: Current position.
@@ -47,20 +65,20 @@ class GridActor(AbstractActor):
             rng_key: JAX PRNG key for stochastic dynamics.
             
         Returns:
-            New position after action (may be outside bounds).
+            New position after action (may be outside grid bounds).
         """
-        # Map action to intended displacement: 0→-1, 1→0, 2→+1
-        intended_displacement = action - 1
+        # Mean displacement for this action
+        mean = self.scale * (action - 1)
         
-        # Sample outcome: 0=below, 1=intended, 2=above
-        # Probabilities: [eps/2, 1-eps, eps/2]
-        eps_half = self.noise_prob / 2.0
-        probs = jnp.array([eps_half, 1.0 - self.noise_prob, eps_half])
-        outcome = jax.random.choice(rng_key, jnp.array([0, 1, 2]), p=probs)
+        # Sample noise and compute continuous signal
+        noise = float(jax.random.normal(rng_key) * self.noise_std)
+        w_continuous = mean + noise
         
-        # Map outcome to displacement relative to intended
-        # 0→intended-1, 1→intended, 2→intended+1
-        displacement = int(intended_displacement + (outcome - 1))
+        # Clip to [-z_max, z_max]
+        w_clipped = max(-self.z_max, min(self.z_max, w_continuous))
+        
+        # Round to integer displacement
+        displacement = int(round(w_clipped))
         
         # Apply displacement to controllable axis
         new_controllable = position.controllable + displacement
@@ -72,47 +90,71 @@ class GridActor(AbstractActor):
             return GridPosition(position.i, new_controllable, None)
     
     def get_controllable_displacement_pmf(self) -> np.ndarray:
-        """Get full PMF over controllable axis displacements for all actions.
+        """Get PMF over controllable displacements for all actions.
         
-        Following formulation: intended displacement gets (1-eps), adjacent levels get eps/2 each.
+        Uses the same clipped-Gaussian PMF as the field:
+            P(Delta = k | action = a) = clipped_gaussian_pmf(k; m_a, sigma_a, z_max)
+        where m_a = scale * (a - 1).
         
         Returns:
-            PMF array of shape (3, 5) where entry [a, j] is P(displacement = j-c_max | action=a). 
-            where c_max is the maximum controllable displacement magnitude.
+            PMF array of shape (3, 2*z_max+1) where entry [a, j] is
+            P(displacement = j - z_max | action = a).
             
-            For c_max=2, displacements are {-2, -1, 0, +1, +2}:
-            - Action 0 (decrease, intended=-1): nonzero for {-2, -1, 0}
-            - Action 1 (stay, intended=0): nonzero for {-1, 0, +1}
-            - Action 2 (increase, intended=+1): nonzero for {0, +1, +2}
-            
-        Example with eps=0.2:
-            pmf[0, :] = [0.1, 0.8, 0.1, 0.0, 0.0]  # action=decrease
-            pmf[1, :] = [0.0, 0.1, 0.8, 0.1, 0.0]  # action=stay
-            pmf[2, :] = [0.0, 0.0, 0.1, 0.8, 0.1]  # action=increase
+            Displacements range over {-z_max, ..., +z_max}.
         """
-        c_max = 2  # TODO: Could be made configurable or inferred (max displacement magnitude). Right now the function logic is hardcoded for c_max=2.
-        n_displacements = 2 * c_max + 1  # 5 displacements: {-2, -1, 0, +1, +2}
-        n_actions = 3  # {0=decrease, 1=stay, 2=increase}
-        
-        # Initialize PMF array
+        n_actions = 3
+        n_displacements = 2 * self.z_max + 1
         pmf = np.zeros((n_actions, n_displacements), dtype=np.float32)
         
-        eps_half = self.noise_prob / 2.0  # Split noise equally between adjacent levels
-        
-        # For each action
         for action in range(n_actions):
-            # Map action to intended displacement: 0→-1, 1→0, 2→+1
-            intended_displacement = action - 1
+            mean = self.scale * (action - 1)
+            pmf[action, :] = self._clipped_gaussian_pmf(mean)
+        
+        return pmf
+    
+    def _clipped_gaussian_pmf(self, mean: float) -> np.ndarray:
+        """Compute 1D clipped-Gaussian PMF.
+        
+        Matches the field's PMF derivation:
+        - Boundary bins accumulate tail probability beyond ±z_max.
+        - Interior bins integrate the Gaussian over [k-0.5, k+0.5].
+        
+        Args:
+            mean: Mean of the Gaussian (m_a = scale * (action - 1)).
             
-            # Actual displacements: intended ± 1
-            # Convert to indices: displacement d maps to index j = d + c_max
-            below_idx = (intended_displacement - 1) + c_max  # intended - 1
-            intended_idx = intended_displacement + c_max      # intended
-            above_idx = (intended_displacement + 1) + c_max   # intended + 1
-            
-            # Set probabilities: eps/2 for adjacent, 1-eps for intended
-            pmf[action, below_idx] = eps_half            # eps/2 for below
-            pmf[action, intended_idx] = 1.0 - self.noise_prob  # 1-eps for intended
-            pmf[action, above_idx] = eps_half            # eps/2 for above
+        Returns:
+            PMF array of shape (2*z_max+1,).
+        """
+        z = self.z_max
+        sigma = self.noise_std
+        n = 2 * z + 1
+        
+        # Degenerate case: z_max = 0
+        if z == 0:
+            return np.ones(1, dtype=np.float32)
+        
+        # Deterministic case: sigma_a = 0
+        if sigma == 0.0:
+            clipped = max(-z, min(z, mean))
+            rounded = int(round(clipped))
+            pmf = np.zeros(n, dtype=np.float32)
+            pmf[rounded + z] = 1.0
+            return pmf
+        
+        # General case: clipped Gaussian
+        pmf = np.zeros(n, dtype=np.float32)
+        
+        # Left boundary: P(continuous < -z_max + 0.5)
+        pmf[0] = norm.cdf((-z + 0.5 - mean) / sigma)
+        
+        # Interior bins: P(k - 0.5 <= continuous < k + 0.5)
+        if z > 0:
+            interior_k = np.arange(-z + 1, z)
+            upper = (interior_k + 0.5 - mean) / sigma
+            lower = (interior_k - 0.5 - mean) / sigma
+            pmf[1:-1] = norm.cdf(upper) - norm.cdf(lower)
+        
+        # Right boundary: P(continuous >= z_max - 0.5)
+        pmf[-1] = 1.0 - norm.cdf((z - 0.5 - mean) / sigma)
         
         return pmf

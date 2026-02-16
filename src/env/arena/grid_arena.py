@@ -30,7 +30,7 @@ class GridArena(AbstractArena):
         actor: AbstractActor,
         config: GridConfig,
         initial_position: GridPosition,
-        boundary_mode: str = 'clip'
+        boundary_mode: str = 'terminal'
     ):
         """Initialize grid arena.
         
@@ -40,9 +40,9 @@ class GridArena(AbstractArena):
             config: Grid configuration.
             initial_position: Starting position for reset.
             boundary_mode: How to handle boundaries:
-                - 'clip': Clamp position to valid range (default)
+                - 'clip': Clamp position to valid range
                 - 'periodic': Wrap around on ambient axes, clip on controllable
-                - 'terminal': Mark as terminal when crossing boundary
+                - 'terminal': Mark as terminal when crossing boundary (default)
         """
         self.field = field
         self.actor = actor
@@ -55,6 +55,26 @@ class GridArena(AbstractArena):
         if boundary_mode not in valid_modes:
             raise ValueError(
                 f"boundary_mode must be one of {valid_modes}, got {boundary_mode}"
+            )
+        
+        # Validate initial_position is within grid
+        if not (1 <= initial_position.i <= config.n_x and
+                1 <= initial_position.j <= config.n_y):
+            raise ValueError(
+                f"initial_position {initial_position} is outside grid "
+                f"({config.n_x}, {config.n_y}, {config.n_z})"
+            )
+        if config.ndim == 3 and (
+            initial_position.k is None or
+            not (1 <= initial_position.k <= config.n_z)
+        ):
+            raise ValueError(
+                f"initial_position.k={initial_position.k} is invalid for 3D grid "
+                f"[1, {config.n_z}]"
+            )
+        if config.ndim == 2 and initial_position.k is not None:
+            raise ValueError(
+                f"initial_position.k must be None for 2D grid, got {initial_position.k}"
             )
         
         # Arena state (updated in reset and step)
@@ -204,7 +224,7 @@ class GridArena(AbstractArena):
         - 3D: [i, j, k, u_obs, v_obs] (5 dimensions)
         - 2D: [i, j, u_obs] (3 dimensions)
         """
-        d_max = self.config.d_max
+        d_max = self.field.d_max
         
         if self.ndim == 3:
             return gym.spaces.Box(

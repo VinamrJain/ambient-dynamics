@@ -20,13 +20,14 @@ class SimpleField(AbstractField):
     on each call, so reset() is a no-op.
     """
     
-    def __init__(self, config: GridConfig):
+    def __init__(self, config: GridConfig, d_max: int):
         """Initialize simple field.
         
         Args:
             config: Grid configuration.
+            d_max: Maximum displacement magnitude on ambient axes.
         """
-        super().__init__(config)
+        super().__init__(config, d_max)
     
     def reset(self, rng_key: jnp.ndarray) -> None:
         """Reset field (no-op for stateless simple field).
@@ -51,7 +52,7 @@ class SimpleField(AbstractField):
             - 3D: (u, v) both sampled uniformly
             - 2D: (u, None) only first ambient axis
         """
-        d_max = self.config.d_max
+        d_max = self.d_max
         
         if self.ndim == 3:
             # 3D: sample both u and v
@@ -71,7 +72,7 @@ class SimpleField(AbstractField):
             - 3D: Array of shape (2*d_max+1, 2*d_max+1) with uniform probabilities
             - 2D: Array of shape (2*d_max+1,) with uniform probabilities
         """
-        size = 2 * self.config.d_max + 1
+        size = 2 * self.d_max + 1
         
         if self.ndim == 3:
             return np.ones((size, size), dtype=np.float32) / (size ** 2)

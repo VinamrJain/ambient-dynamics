@@ -102,12 +102,10 @@ class GridConfig(NamedTuple):
         n_x: Grid size on ambient axis 1 (always present)
         n_y: Grid size on ambient axis 2 (3D) or controllable axis (2D)
         n_z: Grid size on controllable axis (3D only, None for 2D)
-        d_max: Maximum displacement magnitude on ambient axes
     """
     n_x: int  # Ambient axis 1 size
     n_y: int  # Ambient axis 2 (3D) or controllable axis (2D)
-    n_z: Optional[int]  # Controllable axis size (3D only, None for 2D)
-    d_max: int  # Maximum ambient displacement magnitude
+    n_z: Optional[int] = None  # Controllable axis size (3D only, None for 2D)
     
     @property
     def ndim(self) -> int:
@@ -133,13 +131,12 @@ class GridConfig(NamedTuple):
             return (self.n_x, self.n_y)
 
     @classmethod
-    def create(cls, n_x: int, n_y: int, d_max: int, n_z: Optional[int] = None) -> 'GridConfig':
+    def create(cls, n_x: int, n_y: int, n_z: Optional[int] = None) -> 'GridConfig':
         """Create GridConfig with validation.
         
         Args:
             n_x: Ambient axis 1 size
             n_y: Ambient axis 2 (3D) or controllable axis (2D)
-            d_max: Maximum displacement magnitude
             n_z: Controllable axis size for 3D (None for 2D)
         
         Returns:
@@ -150,20 +147,8 @@ class GridConfig(NamedTuple):
             raise ValueError("Grid dimensions must be positive integers")
         if n_z is not None and n_z <= 0:
             raise ValueError("n_z must be positive if provided")
-        if d_max < 0:
-            raise ValueError("Maximum displacement must be non-negative")
         
-        # Validate d_max against ambient dimensions
-        if n_z is not None:
-            # 3D: ambient is (n_x, n_y)
-            if d_max >= min(n_x, n_y):
-                raise ValueError("Maximum displacement should be smaller than ambient dimensions")
-        else:
-            # 2D: ambient is (n_x,)
-            if d_max >= n_x:
-                raise ValueError("Maximum displacement should be smaller than ambient dimension")
-        
-        return cls(n_x, n_y, n_z, d_max)
+        return cls(n_x, n_y, n_z)
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,4 @@
-"""3D Navigation Arena Visual Verification.
-"""
+"""3D Navigation Arena with RFF GP Field Visualization."""
 
 import sys
 import os
@@ -7,22 +6,24 @@ import os
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+import jax
+
 from src.env import (
     GridEnvironment,
     NavigationArena,
-    SimpleField,
     GridActor,
     NavigationRenderer,
     GridConfig,
     GridPosition,
 )
+from src.env.field import RFFGPField
 
 
-def run_3d_visualization():
-    """Run 3D navigation episode and display visualization."""
+def run_3d_visualization_rff():
+    """Run 3D navigation with RFF GP Field (divergence-free)."""
     
     print("=" * 70)
-    print("3D NAVIGATION - VISUAL VERIFICATION")
+    print("3D NAVIGATION - RFF GP FIELD (Divergence-Free)")
     print("=" * 70)
     
     # Configuration: 3D grid
@@ -36,6 +37,17 @@ def run_3d_visualization():
     print(f"  Controllable axis: z (size {config.n_z})")
     print(f"  Max displacement: {d_max}")
     
+    # GP Field parameters
+    sigma = 1.5
+    lengthscale = 4.0
+    nu = 2.5
+    
+    print(f"\nRFF GP Field parameters:")
+    print(f"  sigma: {sigma} (amplitude)")
+    print(f"  lengthscale: {lengthscale} (correlation)")
+    print(f"  nu: {nu} (smoothness)")
+    print(f"  Method: Streamfunction (divergence-free)")
+    
     # Positions
     initial_position = GridPosition(2, 2, 2)
     target_position = GridPosition(10, 10, 6)
@@ -46,8 +58,12 @@ def run_3d_visualization():
     print(f"  Target: ({target_position.i}, {target_position.j}, {target_position.k})")
     print(f"  Vicinity radius: {vicinity_radius}")
     
-    # Create components
-    field = SimpleField(config, d_max=d_max)
+    # Create RFF GP field (3D = streamfunction method for divergence-free field)
+    field = RFFGPField(
+        config, d_max=d_max,
+        sigma=sigma, lengthscale=lengthscale, nu=nu,
+        num_features=500, noise_std=0.2
+    )
     actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
@@ -71,9 +87,9 @@ def run_3d_visualization():
         show_grid_points=True,
         width=1024,
         height=768,
-        camera_eye={'x': 1.8, 'y': -1.8, 'z': 1.2},  # Good 3D viewing angle
+        camera_eye={'x': 1.8, 'y': -1.8, 'z': 1.2},
         field=field,
-        show_field=True  # Show field mean displacement arrows (zero for SimpleField)
+        show_field=True  # Show GP mean displacement arrows
     )
     
     env = GridEnvironment(
@@ -105,38 +121,28 @@ def run_3d_visualization():
     print(f"  Target reached: {info['target_reached']}")
     print("-" * 70)
     
-    # Save and display
+    # Save
     output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "3d")
     os.makedirs(output_dir, exist_ok=True)
-    animated_html_path = os.path.join(output_dir, "viz_3d_output_animated.html")
-    gif_path = os.path.join(output_dir, "viz_3d_output.gif")
-    mp4_path = os.path.join(output_dir, "viz_3d_output.mp4")
+    animated_html_path = os.path.join(output_dir, "viz_3d_rff_output_animated.html")
     
     renderer.save_animated_html(animated_html_path)
-    #renderer.save_gif(gif_path)
-    #renderer.save_mp4(mp4_path)
-    
-    # try:
-    #     env.render(mode='human')
-    #     print("\nVisualization displayed in browser.")
-    # except Exception as e:
-    #     print(f"\nCould not open browser: {e}")
-    #     print(f"Open the HTML file manually: {animated_html_path}")
+    print(f"\nSaved to: {animated_html_path}")
     
     env.close()
 
 
-def run_3d_station_keeping():
-    """Run 3D station-keeping scenario (start at target)."""
+def run_3d_station_keeping_rff():
+    """Run 3D station-keeping with RFF GP Field."""
     
     print("\n")
     print("=" * 70)
-    print("3D STATION-KEEPING - VISUAL VERIFICATION")
+    print("3D STATION-KEEPING - RFF GP FIELD")
     print("=" * 70)
     
     # Configuration
     config = GridConfig.create(n_x=10, n_y=10, n_z=6)
-    d_max = 1
+    d_max = 2
     
     # Start at target for station-keeping
     target_position = GridPosition(5, 5, 3)
@@ -146,9 +152,13 @@ def run_3d_station_keeping():
     print(f"\nStation-keeping task:")
     print(f"  Start/Target: ({target_position.i}, {target_position.j}, {target_position.k})")
     print(f"  Vicinity radius: {vicinity_radius}")
-    print(f"  Agent tries to stay within vicinity despite field perturbations")
+    print(f"  Agent tries to stay within vicinity despite GP field perturbations")
     
-    field = SimpleField(config, d_max=d_max)
+    field = RFFGPField(
+        config, d_max=d_max,
+        sigma=1.0, lengthscale=3.0, nu=2.5,
+        num_features=500, noise_std=0.1
+    )
     actor = GridActor(noise_std=0.1)
     
     arena = NavigationArena(
@@ -173,7 +183,7 @@ def run_3d_station_keeping():
         width=1024,
         height=768,
         field=field,
-        show_field=True  # Show field mean displacement arrows
+        show_field=True
     )
     
     env = GridEnvironment(
@@ -213,26 +223,18 @@ def run_3d_station_keeping():
     # Save
     output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "3d")
     os.makedirs(output_dir, exist_ok=True)
-    animated_html_path = os.path.join(output_dir, "viz_3d_station_keeping_animated.html")
-    gif_path = os.path.join(output_dir, "viz_3d_station_keeping.gif")
-    mp4_path = os.path.join(output_dir, "viz_3d_station_keeping.mp4")
+    animated_html_path = os.path.join(output_dir, "viz_3d_rff_station_keeping_animated.html")
     
     renderer.save_animated_html(animated_html_path)
-    #renderer.save_gif(gif_path)
-    #renderer.save_mp4(mp4_path)
-
-    # try:
-    #     env.render(mode='human')
-    # except Exception as e:
-    #     print(f"Open manually: {animated_html_path}")
+    print(f"\nSaved to: {animated_html_path}")
     
     env.close()
 
 
 if __name__ == "__main__":
-    run_3d_visualization()
+    run_3d_visualization_rff()
     
     # Optionally run station-keeping demo
     response = input("\nRun station-keeping visualization? [y/N]: ")
     if response.lower() == 'y':
-        run_3d_station_keeping()
+        run_3d_station_keeping_rff()
