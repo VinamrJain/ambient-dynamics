@@ -69,32 +69,24 @@ class NavigationRenderer(Renderer):
         self.field = field
         self.show_field = show_field
         
-        # Compute smart scaling based on grid size
         self._compute_scaling()
         
-        # Determine grid subsampling #TODO: Improve grid subsampling logic.
-        if self.ndim == 3:
-            total_points = config.n_x * config.n_y * config.n_z
-            if grid_subsample is None:
-                if total_points > 10000:
-                    grid_subsample = max(2, int(np.cbrt(total_points / 1000)))
-                elif total_points > 1000:
-                    grid_subsample = 2
-                else:
-                    grid_subsample = 1
-        else:
-            total_points = config.n_x * config.n_y
-            if grid_subsample is None:
-                if total_points > 1000:
-                    grid_subsample = max(2, int(np.sqrt(total_points / 500)))
-                elif total_points > 200:
-                    grid_subsample = 2
-                else:
-                    grid_subsample = 1
+        # Determine grid subsampling
+        if grid_subsample is None:
+            if self.ndim == 3:
+                total = config.n_x * config.n_y * config.n_z
+                grid_subsample = max(2, int(np.cbrt(total / 1000))) if total > 10000 else (2 if total > 1000 else 1)
+            else:
+                total = config.n_x * config.n_y
+                grid_subsample = max(2, int(np.sqrt(total / 500))) if total > 1000 else (2 if total > 200 else 1)
         self.grid_subsample = grid_subsample
         
         # Episode data
         self.states: List[NavigationArenaState] = []
+        
+        # Cache for static traces (field doesn't change during episode)
+        self._cached_field_trace = None
+        self._cached_grid_trace = None
     
     @property
     def ndim(self) -> int:
@@ -104,6 +96,8 @@ class NavigationRenderer(Renderer):
     def reset(self) -> None:
         """Reset renderer for new episode."""
         self.states = []
+        self._cached_field_trace = None
+        self._cached_grid_trace = None
     
     def step(self, state: NavigationArenaState) -> None:
         """Record navigation arena state for visualization."""
@@ -163,15 +157,12 @@ class NavigationRenderer(Renderer):
         fig = go.Figure()
         
         if not self.states:
-            return fig  # Empty figure if no states
+            return fig
         
-        # Extract info from latest state
         current_state = self.states[-1]
         
-        # Add visualization elements
         if self.show_grid_points:
             self._add_grid_points(fig)
-        
         if self.show_field:
             self._add_field(fig)
         
@@ -257,251 +248,212 @@ class NavigationRenderer(Renderer):
     # ========================================================================
     
     def _get_grid_points_trace(self):
-        """Get grid points as Plotly trace."""
-        i_range = range(1, self.config.n_x + 1, self.grid_subsample)
-        j_range = range(1, self.config.n_y + 1, self.grid_subsample)
+        """Get grid points as Plotly trace (cached)."""
+        if self._cached_grid_trace is not None:
+            return self._cached_grid_trace
+        
+        s = self.grid_subsample
+        xs = np.arange(1, self.config.n_x + 1, s)
+        ys = np.arange(1, self.config.n_y + 1, s)
+        marker = dict(size=self.grid_point_size, color='gray', opacity=0.4)
         
         if self.ndim == 3:
-            k_range = range(1, self.config.n_z + 1, self.grid_subsample)
-            i_coords, j_coords, k_coords = [], [], []
-            for i in i_range:
-                for j in j_range:
-                    for k in k_range:
-                        i_coords.append(i)
-                        j_coords.append(j)
-                        k_coords.append(k)
-            
-            return go.Scatter3d(
-                x=i_coords, y=j_coords, z=k_coords,
-                mode='markers',
-                marker=dict(size=self.grid_point_size, color='gray', opacity=0.4),
-                name='Grid',
-                showlegend=False,
-                hoverinfo='skip'
+            zs = np.arange(1, self.config.n_z + 1, s)
+            gx, gy, gz = np.meshgrid(xs, ys, zs, indexing='ij')
+            trace = go.Scatter3d(
+                x=gx.ravel(), y=gy.ravel(), z=gz.ravel(),
+                mode='markers', marker=marker,
+                name='Grid', showlegend=False, hoverinfo='skip'
             )
         else:
-            i_coords, j_coords = [], []
-            for i in i_range:
-                for j in j_range:
-                    i_coords.append(i)
-                    j_coords.append(j)
-            
-            return go.Scatter(
-                x=i_coords, y=j_coords,
-                mode='markers',
-                marker=dict(size=self.grid_point_size, color='gray', opacity=0.4),
-                name='Grid',
-                showlegend=False,
-                hoverinfo='skip'
+            gx, gy = np.meshgrid(xs, ys, indexing='ij')
+            trace = go.Scatter(
+                x=gx.ravel(), y=gy.ravel(),
+                mode='markers', marker=marker,
+                name='Grid', showlegend=False, hoverinfo='skip'
             )
+        
+        self._cached_grid_trace = trace
+        return trace
     
     def _get_field_trace(self):
-        """Get field mean displacement arrows as Plotly trace(s).
+        """Get field mean displacement as Plotly trace(s) (cached).
         
         Returns:
-            - 2D: List of traces from create_quiver (arrows in x direction only)
-            - 3D: go.Cone trace at all subsampled z-slices (arrows in x-y plane, w=0)
-            - None if field not available, doesn't support get_mean_displacement,
-              or all arrows are zero
+            - 2D: List of Scatter traces from ff.create_quiver
+            - 3D: Single Scatter3d trace of NaN-separated line-segment arrows
+            - None if field not available or all arrows are zero
         """
+        if self._cached_field_trace is not None:
+            return self._cached_field_trace
+        
         if self.field is None:
             return None
         
-        # Check if field supports mean displacement
-        if not hasattr(self.field, 'get_mean_displacement'):
+        result = self._build_field_trace()
+        self._cached_field_trace = result
+        return result
+    
+    def _build_field_trace(self):
+        """Build field quiver arrows for 2D or 3D.
+        
+        Shared pipeline: subsample grid -> get (u, v) vectors -> check magnitude -> render.
+        Uses bulk field array when available, pointwise query as fallback.
+        
+        2D fields have v=0 (field only affects ambient axis x).
+        3D fields have (u, v) at each (x, y, z) level, rendered as flat arrows at each z.
+        """
+        s = self.grid_subsample
+        is_3d = self.ndim == 3
+        
+        # Build subsampled grid
+        xs = np.arange(1, self.config.n_x + 1, s, dtype=float)
+        ys = np.arange(1, self.config.n_y + 1, s, dtype=float)
+        if is_3d:
+            zs = np.arange(1, self.config.n_z + 1, s, dtype=float)
+            gx, gy, gz = np.meshgrid(xs, ys, zs, indexing='ij')
+        else:
+            gx, gy = np.meshgrid(xs, ys, indexing='ij')
+        
+        # Get displacement vectors: prefer bulk array, fall back to pointwise
+        if hasattr(self.field, 'get_mean_displacement_field'):
+            field_arr = self.field.get_mean_displacement_field()
+            if field_arr is None:
+                return None
+            if is_3d:
+                u = field_arr[::s, ::s, ::s, 0].ravel()
+                v = field_arr[::s, ::s, ::s, 1].ravel()
+            else:
+                u = field_arr[::s, ::s, 0].ravel()
+                v = np.zeros_like(u)
+        elif hasattr(self.field, 'get_mean_displacement'):
+            flat_coords = np.column_stack(
+                [gx.ravel(), gy.ravel()] + ([gz.ravel()] if is_3d else [])
+            )
+            u = np.zeros(len(flat_coords))
+            v = np.zeros(len(flat_coords))
+            for idx, coords in enumerate(flat_coords):
+                pos = GridPosition(int(coords[0]), int(coords[1]),
+                                   int(coords[2]) if is_3d else None)
+                mean = self.field.get_mean_displacement(pos)
+                if mean is not None:
+                    u[idx] = mean[0]
+                    v[idx] = mean[1] if len(mean) > 1 else 0.0
+        else:
             return None
         
-        i_range = range(1, self.config.n_x + 1, self.grid_subsample)
-        j_range = range(1, self.config.n_y + 1, self.grid_subsample)
+        speed = np.sqrt(u**2 + v**2)
+        max_mag = speed.max()
+        if max_mag < 1e-6:
+            return None
         
-        if self.ndim == 3:
-            # 3D: Cones showing (u, v, 0) displacement at all subsampled z-slices
-            k_range = range(1, self.config.n_z + 1, self.grid_subsample)
-            
-            x_coords, y_coords, z_coords = [], [], []
-            u_vals, v_vals, w_vals = [], [], []
-            
-            for i in i_range:
-                for j in j_range:
-                    for k in k_range:
-                        pos = GridPosition(i, j, k)
-                        mean = self.field.get_mean_displacement(pos)
-                        if mean is not None:
-                            x_coords.append(i)
-                            y_coords.append(j)
-                            z_coords.append(k)
-                            u_vals.append(mean[0])
-                            v_vals.append(mean[1] if len(mean) > 1 else 0.0)
-                            w_vals.append(0.0)  # No z-component (field only affects ambient)
-            
-            if not x_coords:
-                return None
-            
-            # Check if all arrows are zero (e.g., SimpleField)
-            max_mag = max(np.sqrt(u**2 + v**2) for u, v in zip(u_vals, v_vals)) if u_vals else 0.0
-            if max_mag < 1e-6:
-                # All arrows are essentially zero - skip visualization
-                return None
-            
-            # Scale for visibility
-            sizeref = max(0.5, max_mag) if max_mag > 0 else 0.5
-            
-            return go.Cone(
-                x=x_coords, y=y_coords, z=z_coords,
-                u=u_vals, v=v_vals, w=w_vals,
-                sizemode='absolute',
-                sizeref=sizeref,
-                anchor='tail',
-                colorscale='Blues',
-                opacity=0.6,
-                showscale=False,
-                name='Field',
-                showlegend=True
-            )
+        arrow_scale = 0.7 * s / max_mag
+        
+        if is_3d:
+            return self._quiver_scatter3d(gx, gy, gz, u, v, speed, max_mag, arrow_scale)
         else:
-            # 2D: Quiver arrows showing (u, 0) displacement
-            # In 2D, field only affects x (ambient), arrows point in x direction
-            x_coords, y_coords = [], []
-            u_vals, v_vals = [], []  # v is always 0 for 2D (field doesn't affect y)
-            
-            for i in i_range:
-                for j in j_range:
-                    pos = GridPosition(i, j, None)
-                    mean = self.field.get_mean_displacement(pos)
-                    if mean is not None:
-                        x_coords.append(float(i))
-                        y_coords.append(float(j))
-                        u_vals.append(mean[0])
-                        v_vals.append(0.0)  # Field only affects ambient (x), not controllable (y)
-            
-            if not x_coords:
-                return None
-            
-            # Check if all arrows are zero (e.g., SimpleField)
-            max_mag = max(abs(u) for u in u_vals) if u_vals else 0.0
-            if max_mag < 1e-6:
-                # All arrows are essentially zero - skip visualization
-                return None
-            
-            # Scale arrows for visibility
-            scale = 0.3 * self.grid_subsample / max_mag if max_mag > 0 else 0.3
-            
-            # Create quiver plot
-            quiver_fig = ff.create_quiver(
-                x_coords, y_coords, u_vals, v_vals,
-                scale=scale,
-                arrow_scale=0.3,
-                line=dict(color='steelblue', width=1.5),
-                name='Field'
-            )
-            
-            # Return the traces (quiver creates multiple traces)
-            traces = list(quiver_fig.data)
-            # Only show legend for first trace
-            for i, trace in enumerate(traces):
-                trace.showlegend = (i == 0)
-                trace.name = 'Field' if i == 0 else None
-            
-            return traces
+            return self._quiver_scatter2d(gx, gy, u, v, arrow_scale)
+    
+    @staticmethod
+    def _quiver_scatter3d(gx, gy, gz, u, v, speed, max_mag, arrow_scale):
+        """Render quiver arrows as NaN-separated Scatter3d line segments."""
+        x0, y0, z0 = gx.ravel(), gy.ravel(), gz.ravel()
+        x1 = x0 + arrow_scale * u
+        y1 = y0 + arrow_scale * v
+        
+        n = len(x0)
+        px = np.empty(3 * n);  px[0::3] = x0;  px[1::3] = x1;  px[2::3] = np.nan
+        py = np.empty(3 * n);  py[0::3] = y0;  py[1::3] = y1;  py[2::3] = np.nan
+        pz = np.empty(3 * n);  pz[0::3] = z0;  pz[1::3] = z0;  pz[2::3] = np.nan
+        
+        return go.Scatter3d(
+            x=px, y=py, z=pz,
+            mode='lines',
+            line=dict(color=np.repeat(speed, 3), colorscale='Blues',
+                      width=3, cmin=0.0, cmax=float(max_mag)),
+            opacity=0.7, name='Field', showlegend=True, hoverinfo='skip',
+        )
+    
+    @staticmethod
+    def _quiver_scatter2d(gx, gy, u, v, arrow_scale):
+        """Render quiver arrows using ff.create_quiver for 2D."""
+        quiver_fig = ff.create_quiver(
+            gx.ravel().tolist(), gy.ravel().tolist(),
+            u.tolist(), v.tolist(),
+            scale=arrow_scale,
+            arrow_scale=0.4,
+            line=dict(color='steelblue', width=1.5),
+            name='Field'
+        )
+        traces = list(quiver_fig.data)
+        for i, trace in enumerate(traces):
+            trace.showlegend = (i == 0)
+            trace.name = 'Field' if i == 0 else None
+        return traces
     
     def _get_target_vicinity_trace(self, state: NavigationArenaState):
         """Get target vicinity region as Plotly trace."""
+        tp = state.target_position
+        r = state.vicinity_radius
+        
         if self.ndim == 3:
             theta = np.linspace(0, 2 * np.pi, 40)
             z_levels = np.linspace(1, self.config.n_z, 30)
             theta_grid, z_grid = np.meshgrid(theta, z_levels)
-            x_cylinder = state.target_position.i + state.vicinity_radius * np.cos(theta_grid)
-            y_cylinder = state.target_position.j + state.vicinity_radius * np.sin(theta_grid)
             
             return go.Surface(
-                x=x_cylinder, y=y_cylinder, z=z_grid,
+                x=tp.i + r * np.cos(theta_grid),
+                y=tp.j + r * np.sin(theta_grid),
+                z=z_grid,
                 colorscale=[[0, 'lightgreen'], [1, 'lightgreen']],
-                opacity=0.25,
-                showscale=False,
-                showlegend=False,
-                hoverinfo='skip',
-                name='Vicinity'
+                opacity=0.25, showscale=False, showlegend=False,
+                hoverinfo='skip', name='Vicinity'
             )
         else:
             theta = np.linspace(0, 2 * np.pi, 60)
-            x_circle = state.target_position.i + state.vicinity_radius * np.cos(theta)
-            y_circle = state.target_position.j + state.vicinity_radius * np.sin(theta)
-            
             return go.Scatter(
-                x=x_circle, y=y_circle,
-                mode='lines',
-                fill='toself',
+                x=tp.i + r * np.cos(theta),
+                y=tp.j + r * np.sin(theta),
+                mode='lines', fill='toself',
                 fillcolor='rgba(144, 238, 144, 0.3)',
                 line=dict(color='lightgreen', width=2),
-                name='Vicinity',
-                showlegend=False,
-                hoverinfo='skip'
+                name='Vicinity', showlegend=False, hoverinfo='skip'
             )
     
     def _get_target_trace(self, state: NavigationArenaState):
         """Get target marker as Plotly trace."""
+        tp = state.target_position
         if self.ndim == 3:
             return go.Scatter3d(
-                x=[state.target_position.i],
-                y=[state.target_position.j],
-                z=[state.target_position.k],
+                x=[tp.i], y=[tp.j], z=[tp.k],
                 mode='markers',
-                marker=dict(
-                    size=self.target_size * 0.5,
-                    color='green',
-                    symbol='x',
-                    line=dict(color='darkgreen', width=2)
-                ),
-                name='Target',
-                showlegend=True
+                marker=dict(size=self.target_size * 0.5, color='green',
+                            symbol='x', line=dict(color='darkgreen', width=2)),
+                name='Target', showlegend=True
             )
         else:
             return go.Scatter(
-                x=[state.target_position.i],
-                y=[state.target_position.j],
+                x=[tp.i], y=[tp.j],
                 mode='markers',
-                marker=dict(
-                    size=self.target_size,
-                    color='green',
-                    symbol='x',
-                    line=dict(color='darkgreen', width=2)
-                ),
-                name='Target',
-                showlegend=True
+                marker=dict(size=self.target_size, color='green',
+                            symbol='x', line=dict(color='darkgreen', width=2)),
+                name='Target', showlegend=True
             )
     
     def _get_initial_position_trace(self, state: NavigationArenaState):
         """Get initial position marker as Plotly trace."""
+        ip = state.initial_position
+        marker = dict(size=self.target_size * 0.8, color='orange',
+                      symbol='circle', line=dict(color='darkorange', width=2), opacity=0.8)
         if self.ndim == 3:
             return go.Scatter3d(
-                x=[state.initial_position.i],
-                y=[state.initial_position.j],
-                z=[state.initial_position.k],
-                mode='markers',
-                marker=dict(
-                    size=self.target_size * 0.8,
-                    color='orange',
-                    symbol='circle',
-                    line=dict(color='darkorange', width=2),
-                    opacity=0.8
-                ),
-                name='Start',
-                showlegend=True
+                x=[ip.i], y=[ip.j], z=[ip.k],
+                mode='markers', marker=marker, name='Start', showlegend=True
             )
         else:
             return go.Scatter(
-                x=[state.initial_position.i],
-                y=[state.initial_position.j],
-                mode='markers',
-                marker=dict(
-                    size=self.target_size * 0.8,
-                    color='orange',
-                    symbol='circle',
-                    line=dict(color='darkorange', width=2),
-                    opacity=0.8
-                ),
-                name='Start',
-                showlegend=True
+                x=[ip.i], y=[ip.j],
+                mode='markers', marker=marker, name='Start', showlegend=True
             )
     
     def _get_trajectory_trace(self, up_to_idx: int = None):
@@ -510,69 +462,45 @@ class NavigationRenderer(Renderer):
         Args:
             up_to_idx: If provided, only include states up to this index.
         """
-        if up_to_idx is not None:
-            positions = [s.position for s in self.states[:up_to_idx + 1]]
-        else:
-            positions = [s.position for s in self.states]
+        positions = [s.position for s in (self.states[:up_to_idx + 1] if up_to_idx is not None else self.states)]
         
         if self.ndim == 3:
-            traj_array = np.array([[p.i, p.j, p.k] for p in positions])
+            traj = np.array([[p.i, p.j, p.k] for p in positions])
             return go.Scatter3d(
-                x=traj_array[:, 0],
-                y=traj_array[:, 1],
-                z=traj_array[:, 2],
+                x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
                 mode='lines+markers',
                 line=dict(color='royalblue', width=self.trajectory_width * 2.5),
                 marker=dict(size=self.trajectory_width * 3, color='steelblue', opacity=0.7),
-                name='Trajectory',
-                showlegend=True,
-                opacity=0.8
+                name='Trajectory', showlegend=True, opacity=0.8
             )
         else:
-            traj_array = np.array([[p.i, p.j] for p in positions])
+            traj = np.array([[p.i, p.j] for p in positions])
             return go.Scatter(
-                x=traj_array[:, 0],
-                y=traj_array[:, 1],
+                x=traj[:, 0], y=traj[:, 1],
                 mode='lines+markers',
                 line=dict(color='royalblue', width=self.trajectory_width),
                 marker=dict(size=self.trajectory_width * 1.5, color='steelblue', opacity=0.7),
-                name='Trajectory',
-                showlegend=True,
-                opacity=0.8
+                name='Trajectory', showlegend=True, opacity=0.8
             )
     
     def _get_actor_trace(self, state: NavigationArenaState):
         """Get actor marker as Plotly trace."""
         pos = state.position
-        
         if self.ndim == 3:
             return go.Scatter3d(
-                x=[pos.i],
-                y=[pos.j],
-                z=[pos.k],
+                x=[pos.i], y=[pos.j], z=[pos.k],
                 mode='markers',
-                marker=dict(
-                    size=self.actor_size * 0.8,
-                    color='red',
-                    symbol='diamond',
-                    line=dict(color='darkred', width=2.5)
-                ),
-                name='Actor',
-                showlegend=True
+                marker=dict(size=self.actor_size * 0.8, color='red',
+                            symbol='diamond', line=dict(color='darkred', width=2.5)),
+                name='Actor', showlegend=True
             )
         else:
             return go.Scatter(
-                x=[pos.i],
-                y=[pos.j],
+                x=[pos.i], y=[pos.j],
                 mode='markers',
-                marker=dict(
-                    size=self.actor_size,
-                    color='red',
-                    symbol='diamond',
-                    line=dict(color='darkred', width=2)
-                ),
-                name='Actor',
-                showlegend=True
+                marker=dict(size=self.actor_size, color='red',
+                            symbol='diamond', line=dict(color='darkred', width=2)),
+                name='Actor', showlegend=True
             )
     
     def _get_animated_layout(self) -> go.Layout:

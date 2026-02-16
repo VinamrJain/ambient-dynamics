@@ -27,8 +27,8 @@ def run_3d_visualization_rff():
     print("=" * 70)
     
     # Configuration: 3D grid
-    config = GridConfig.create(n_x=12, n_y=12, n_z=8)
-    d_max = 3
+    config = GridConfig.create(n_x=50, n_y=50, n_z=20)
+    d_max = 10
     
     print(f"\nGrid configuration:")
     print(f"  Dimensions: {config.ndim}D")
@@ -38,7 +38,7 @@ def run_3d_visualization_rff():
     print(f"  Max displacement: {d_max}")
     
     # GP Field parameters
-    sigma = 1.5
+    sigma = 2.5
     lengthscale = 4.0
     nu = 2.5
     
@@ -49,9 +49,9 @@ def run_3d_visualization_rff():
     print(f"  Method: Streamfunction (divergence-free)")
     
     # Positions
-    initial_position = GridPosition(2, 2, 2)
-    target_position = GridPosition(10, 10, 6)
-    vicinity_radius = 2.0
+    initial_position = GridPosition(15, 15, 10)
+    target_position = GridPosition(35, 35, 16)
+    vicinity_radius = 5.0
     
     print(f"\nNavigation task:")
     print(f"  Start: ({initial_position.i}, {initial_position.j}, {initial_position.k})")
@@ -62,9 +62,9 @@ def run_3d_visualization_rff():
     field = RFFGPField(
         config, d_max=d_max,
         sigma=sigma, lengthscale=lengthscale, nu=nu,
-        num_features=500, noise_std=0.2
+        num_features=500, noise_std=0.5
     )
-    actor = GridActor(noise_std=0.1)
+    actor = GridActor(noise_std=0.5, scale=2.5)
     
     arena = NavigationArena(
         field=field,
@@ -73,7 +73,7 @@ def run_3d_visualization_rff():
         initial_position=initial_position,
         target_position=target_position,
         vicinity_radius=vicinity_radius,
-        boundary_mode='clip',
+        boundary_mode='terminal',
         distance_reward_weight=-0.1,
         vicinity_bonus=5.0,
         step_penalty=-0.1,

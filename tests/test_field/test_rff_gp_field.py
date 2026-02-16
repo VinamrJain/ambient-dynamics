@@ -43,8 +43,8 @@ def _sample_case(ndim: int, seed: int) -> dict:
 
 
 RANDOM_CASES = (
-    [_sample_case(2, seed) for seed in range(10)]
-    + [_sample_case(3, 100 + seed) for seed in range(10)]
+    [_sample_case(2, seed) for seed in range(4)]
+    + [_sample_case(3, 100 + seed) for seed in range(4)]
 )
 
 

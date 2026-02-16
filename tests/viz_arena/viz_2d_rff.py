@@ -27,8 +27,8 @@ def run_2d_visualization_rff():
     print("=" * 70)
     
     # Configuration: 2D grid
-    config = GridConfig.create(n_x=100, n_y=80)
-    d_max = 20
+    config = GridConfig.create(n_x=1000, n_y=1000)
+    d_max = 100
     
     print(f"\nGrid configuration:")
     print(f"  Dimensions: {config.ndim}D")
@@ -36,8 +36,8 @@ def run_2d_visualization_rff():
     print(f"  Max displacement: {d_max}")
     
     # GP Field parameters
-    sigma = 5
-    lengthscale = 10
+    sigma = 20
+    lengthscale = 50
     nu = 2.5
     
     print(f"\nRFF GP Field parameters:")
@@ -46,9 +46,9 @@ def run_2d_visualization_rff():
     print(f"  nu: {nu} (smoothness)")
     
     # Positions
-    initial_position = GridPosition(20, 20, None)
-    target_position = GridPosition(80, 60, None)
-    vicinity_radius = 15.0
+    initial_position = GridPosition(300, 300, None)
+    target_position = GridPosition(700, 700, None)
+    vicinity_radius = 50.0
     
     print(f"\nNavigation task:")
     print(f"  Start: ({initial_position.i}, {initial_position.j})")
@@ -58,9 +58,9 @@ def run_2d_visualization_rff():
     field = RFFGPField(
         config, d_max=d_max,
         sigma=sigma, lengthscale=lengthscale, nu=nu,
-        num_features=500, noise_std=0.5
+        num_features=500, noise_std=2
     )
-    actor = GridActor(noise_std=0.1)
+    actor = GridActor(noise_std=2, scale=50)
     
     arena = NavigationArena(
         field=field,
@@ -69,7 +69,7 @@ def run_2d_visualization_rff():
         initial_position=initial_position,
         target_position=target_position,
         vicinity_radius=vicinity_radius,
-        boundary_mode='clip',
+        boundary_mode='terminal',
         distance_reward_weight=-0.1,
         vicinity_bonus=5.0,
         step_penalty=-0.1,
@@ -81,8 +81,8 @@ def run_2d_visualization_rff():
     renderer = NavigationRenderer(
         config=config,
         show_grid_points=True,
-        width=900,
-        height=700,
+        width=1000,
+        height=1000,
         field=field,
         show_field=True
     )
