@@ -11,6 +11,7 @@ import jax
 from src.env import (
     GridEnvironment,
     NavigationArena,
+    NavigationReward,
     GridActor,
     NavigationRenderer,
     GridConfig,
@@ -61,7 +62,13 @@ def run_2d_visualization_rff():
         num_features=500, noise_std=2
     )
     actor = GridActor(noise_std=2, scale=50)
-    
+    reward_fn = NavigationReward(
+        target_position=target_position,
+        vicinity_radius=vicinity_radius,
+        peak_reward=10.0,
+        step_cost=0.1,
+        proximity_scale=0.05,
+    )
     arena = NavigationArena(
         field=field,
         actor=actor,
@@ -70,12 +77,8 @@ def run_2d_visualization_rff():
         target_position=target_position,
         vicinity_radius=vicinity_radius,
         boundary_mode='terminal',
-        distance_reward_weight=-0.1,
-        vicinity_bonus=5.0,
-        step_penalty=-0.1,
+        reward_fn=reward_fn,
         terminate_on_reach=False,
-        use_distance_decay=True,
-        decay_rate=0.3
     )
     
     renderer = NavigationRenderer(

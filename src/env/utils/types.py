@@ -209,11 +209,6 @@ class NavigationArenaState(GridArenaState):
     Static config (for visualization/analysis):
         target_position: Goal position
         vicinity_radius: Radius defining "reached" region
-        distance_reward_weight: Weight for distance penalty (for analysis)
-        vicinity_bonus: Reward for staying in vicinity (for analysis)
-        step_penalty: Per-step penalty (for analysis)
-        use_distance_decay: Whether vicinity bonus decays
-        decay_rate: Exponential decay rate for vicinity bonus
     """
     # Dynamic navigation state
     cumulative_reward: float
@@ -222,8 +217,3 @@ class NavigationArenaState(GridArenaState):
     # Static task configuration (for visualization/analysis)
     target_position: GridPosition
     vicinity_radius: float
-    distance_reward_weight: float
-    vicinity_bonus: float
-    step_penalty: float
-    use_distance_decay: bool
-    decay_rate: float

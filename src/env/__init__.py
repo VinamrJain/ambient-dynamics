@@ -2,6 +2,7 @@
 
 from .environment import GridEnvironment
 from .arena import AbstractArena, GridArena, NavigationArena
+from .arena.reward import RewardFunction, NavigationReward
 from .field.abstract_field import AbstractField
 from .field.simple_field import SimpleField
 from .actor.abstract_actor import AbstractActor
@@ -23,6 +24,8 @@ __all__ = [
     'AbstractArena',
     'GridArena',
     'NavigationArena',
+    'RewardFunction',
+    'NavigationReward',
     # Field
     'AbstractField',
     'SimpleField',

@@ -1,46 +1,59 @@
 """Parameterized contract tests for NavigationArena reward computation.
 
-Covers distance calculation, vicinity detection, decay, cumulative tracking,
-and constructor validation — for both 2D and 3D across randomized scenarios.
+Reward under test is provided by reward_helpers (make_reward_fn, expected_reward_at_distance).
+Change reward_helpers.py to switch reward; tests stay reward-agnostic.
+Covers: reward contracts, vicinity detection, cumulative tracking, constructor validation — 2D and 3D.
 """
+
+import os
+import sys
+
+# Allow importing reward_helpers from same directory when pytest runs test file as top-level module
+_arena_dir = os.path.dirname(os.path.abspath(__file__))
+if _arena_dir not in sys.path:
+    sys.path.insert(0, _arena_dir)
 
 import pytest
 import numpy as np
 import jax
 
 from src.env.arena.navigation_arena import NavigationArena
+from src.env.arena.reward import NavigationReward
 from src.env.field.simple_field import SimpleField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
+
+from reward_helpers import make_reward_fn, expected_reward_at_distance, DEFAULT_REWARD_KWARGS
 
 RNG = np.random.default_rng(9999)
 
 
 # =============================================================================
-# Helpers
+# Helpers (reward-agnostic: use reward_helpers for reward construction)
 # =============================================================================
 
 def _make_arena(
     ndim: int, n: int, initial: GridPosition, target: GridPosition, *,
-    vicinity_radius: float = 2.0, vicinity_bonus: float = 10.0,
-    step_penalty: float = -0.5, distance_reward_weight: float = -0.1,
-    use_distance_decay: bool = False, decay_rate: float = 0.5,
-    d_max: int = 1
+    vicinity_radius: float = 2.0,
+    reward_fn=None,
+    d_max: int = 1,
+    **reward_kwargs,
 ) -> NavigationArena:
+    """Build NavigationArena; reward comes from make_reward_fn unless reward_fn is given."""
     if ndim == 3:
         config = GridConfig.create(n, n, n)
     else:
         config = GridConfig.create(n, n)
     field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_std=0.0)
+    if reward_fn is None:
+        reward_fn = make_reward_fn(target, vicinity_radius, **reward_kwargs)
     return NavigationArena(
         field=field, actor=actor, config=config,
         initial_position=initial, target_position=target,
         vicinity_radius=vicinity_radius, boundary_mode="clip",
-        distance_reward_weight=distance_reward_weight,
-        vicinity_bonus=vicinity_bonus, step_penalty=step_penalty,
+        reward_fn=reward_fn,
         terminate_on_reach=False,
-        use_distance_decay=use_distance_decay, decay_rate=decay_rate,
     )
 
 
@@ -49,15 +62,14 @@ def _make_arena(
 # =============================================================================
 
 REWARD_CASES = [
-    # (ndim, initial, target, vicinity_radius, description)
     (2, (5, 5), (5, 5), 2.0, "2d-at-target"),
     (2, (1, 1), (5, 5), 2.0, "2d-far-from-target"),
-    (2, (7, 5), (5, 5), 2.0, "2d-on-boundary"),       # dist = 2.0 exactly
-    (2, (8, 5), (5, 5), 2.0, "2d-just-outside"),       # dist = 3.0
+    (2, (7, 5), (5, 5), 2.0, "2d-on-boundary"),
+    (2, (8, 5), (5, 5), 2.0, "2d-just-outside"),
     (2, (1, 1), (10, 10), 1.0, "2d-max-distance"),
     (3, (5, 5, 5), (5, 5, 5), 2.0, "3d-at-target"),
     (3, (1, 1, 1), (5, 5, 5), 2.0, "3d-far-from-target"),
-    (3, (7, 5, 5), (5, 5, 5), 2.0, "3d-on-boundary"),  # dist = 2.0
+    (3, (7, 5, 5), (5, 5, 5), 2.0, "3d-on-boundary"),
     (3, (8, 5, 5), (5, 5, 5), 2.0, "3d-just-outside"),
     (3, (1, 1, 1), (10, 10, 10), 0.5, "3d-max-distance"),
 ]
@@ -68,85 +80,72 @@ REWARD_CASES = [
     ids=lambda *a: a[-1] if isinstance(a[-1], str) else str(a)
 )
 def test_reward_contracts(ndim, init_tup, targ_tup, radius, desc):
-    """Reward contracts: distance, vicinity detection, penalty/bonus signs."""
+    """Reward from make_reward_fn: non-negative, matches expected_reward_at_distance, vicinity set."""
     n = 10
+    reward_kw = {"peak_reward": 10.0, "step_cost": 0.5, "proximity_scale": 0.1}
     if ndim == 2:
         initial = GridPosition(init_tup[0], init_tup[1], None)
         target = GridPosition(targ_tup[0], targ_tup[1], None)
+        dist = np.sqrt((init_tup[0] - targ_tup[0])**2 + (init_tup[1] - targ_tup[1])**2)
     else:
         initial = GridPosition(*init_tup)
         target = GridPosition(*targ_tup)
-
-    bonus = 50.0
-    weight = -0.2
-    penalty = -1.0
-    arena = _make_arena(ndim, n, initial, target,
-                        vicinity_radius=radius, vicinity_bonus=bonus,
-                        distance_reward_weight=weight, step_penalty=penalty,
-                        d_max=0)  # d_max=0 so field can't move us
-
-    arena.reset(jax.random.PRNGKey(0))
-
-    # Compute expected distance
-    if ndim == 2:
-        dist = np.sqrt((init_tup[0] - targ_tup[0])**2 + (init_tup[1] - targ_tup[1])**2)
-    else:
         dist = np.sqrt(sum((a - b)**2 for a, b in zip(init_tup, targ_tup)))
+
+    arena = _make_arena(ndim, n, initial, target, vicinity_radius=radius, d_max=0, **reward_kw)
+    arena.reset(jax.random.PRNGKey(0))
 
     assert arena._compute_distance(initial, target) == pytest.approx(dist, abs=1e-10)
 
     reward = arena.compute_reward()
-
-    in_vicinity = dist <= radius
-    if in_vicinity:
-        assert reward == pytest.approx(bonus, rel=1e-6)
-        assert arena._target_reached is True
-    else:
-        expected = weight * dist + penalty
-        assert reward == pytest.approx(expected, rel=1e-6)
-        assert reward < 0  # penalties are negative
-
-
-# =============================================================================
-# Distance decay contract
-# =============================================================================
-
-DECAY_CASES = [
-    # (ndim, initial, target, decay_rate, description)
-    (2, (5, 5), (5, 5), 0.5, "2d-center"),
-    (2, (6, 5), (5, 5), 0.5, "2d-dist1"),
-    (2, (6, 5), (5, 5), 2.0, "2d-dist1-fast-decay"),
-    (3, (5, 5, 5), (5, 5, 5), 0.5, "3d-center"),
-    (3, (6, 5, 5), (5, 5, 5), 0.5, "3d-dist1"),
-    (3, (6, 5, 5), (5, 5, 5), 0.0, "3d-zero-decay"),  # exp(0) = 1
-]
-
-
-@pytest.mark.parametrize(
-    ("ndim", "init_tup", "targ_tup", "decay_rate", "desc"), DECAY_CASES,
-    ids=lambda *a: a[-1] if isinstance(a[-1], str) else str(a)
-)
-def test_decay_contracts(ndim, init_tup, targ_tup, decay_rate, desc):
-    """Vicinity bonus with exponential decay."""
-    n = 10
-    bonus = 100.0
-    if ndim == 2:
-        initial = GridPosition(init_tup[0], init_tup[1], None)
-        target = GridPosition(targ_tup[0], targ_tup[1], None)
-        dist = np.sqrt((init_tup[0]-targ_tup[0])**2 + (init_tup[1]-targ_tup[1])**2)
-    else:
-        initial = GridPosition(*init_tup)
-        target = GridPosition(*targ_tup)
-        dist = np.sqrt(sum((a-b)**2 for a, b in zip(init_tup, targ_tup)))
-
-    arena = _make_arena(ndim, n, initial, target,
-                        vicinity_radius=3.0, vicinity_bonus=bonus,
-                        use_distance_decay=True, decay_rate=decay_rate, d_max=0)
-    arena.reset(jax.random.PRNGKey(0))
-    reward = arena.compute_reward()
-
-    expected = bonus * np.exp(-decay_rate * dist)
+    expected = expected_reward_at_distance(dist, **reward_kw)
     assert reward == pytest.approx(expected, rel=1e-6)
+    assert reward >= 0.0
+    if dist <= radius:
+        assert arena._target_reached is True
+    if dist == 0:
+        assert reward == pytest.approx(reward_kw["peak_reward"] - reward_kw["step_cost"], rel=1e-6)
+
+
+# =============================================================================
+# Proximity scale contract (reward decreases with distance)
+# =============================================================================
+
+@pytest.mark.parametrize("ndim", [2, 3])
+def test_reward_decreases_with_distance(ndim):
+    """Larger distance => smaller reward (reward from make_reward_fn)."""
+    n = 10
+    if ndim == 2:
+        target = GridPosition(5, 5, None)
+        positions = [
+            GridPosition(5, 5, None),   # dist 0
+            GridPosition(6, 5, None),   # dist 1
+            GridPosition(8, 5, None),   # dist 3
+            GridPosition(1, 1, None),  # dist ~5.66
+        ]
+    else:
+        target = GridPosition(5, 5, 5)
+        positions = [
+            GridPosition(5, 5, 5),
+            GridPosition(6, 5, 5),
+            GridPosition(8, 5, 5),
+            GridPosition(1, 1, 1),
+        ]
+
+    reward_fn = make_reward_fn(target, vicinity_radius=10.0, peak_reward=10.0, step_cost=0.2, proximity_scale=0.1)
+    config = GridConfig.create(n, n, n) if ndim == 3 else GridConfig.create(n, n)
+    field = SimpleField(config, d_max=0)
+    actor = GridActor(noise_std=0.0)
+    arena = NavigationArena(
+        field=field, actor=actor, config=config,
+        initial_position=positions[0], target_position=target,
+        vicinity_radius=10.0, boundary_mode="clip",
+        reward_fn=reward_fn,
+    )
+
+    rewards = [arena.reward_fn.compute_scalar(p) for p in positions]
+    for i in range(len(rewards) - 1):
+        assert rewards[i] >= rewards[i + 1], (rewards[i], rewards[i + 1])
 
 
 # =============================================================================
@@ -155,19 +154,21 @@ def test_decay_contracts(ndim, init_tup, targ_tup, decay_rate, desc):
 
 @pytest.mark.parametrize("ndim", [2, 3])
 def test_cumulative_reward_and_reset(ndim):
-    """Cumulative reward accumulates then resets to zero."""
+    """Cumulative reward accumulates then resets to zero (reward from make_reward_fn)."""
     n = 10
+    reward_kw = {"peak_reward": 10.0, "step_cost": 0.5}
     if ndim == 2:
         pos = GridPosition(5, 5, None)
     else:
         pos = GridPosition(5, 5, 5)
 
-    arena = _make_arena(ndim, n, pos, pos, vicinity_bonus=7.0, d_max=0)
+    arena = _make_arena(ndim, n, pos, pos, d_max=0, **reward_kw)
     arena.reset(jax.random.PRNGKey(0))
 
+    expected_per_step = expected_reward_at_distance(0.0, **reward_kw)
     for k in range(1, 6):
         arena.compute_reward()
-        assert arena.get_cumulative_reward() == pytest.approx(7.0 * k)
+        assert arena.get_cumulative_reward() == pytest.approx(expected_per_step * k)
 
     arena.reset(jax.random.PRNGKey(1))
     assert arena.get_cumulative_reward() == 0.0
@@ -183,29 +184,46 @@ def test_cumulative_reward_and_reset(ndim):
     [
         ({"vicinity_radius": 0.0}, "vicinity_radius must be positive"),
         ({"vicinity_radius": -1.0}, "vicinity_radius must be positive"),
-        ({"vicinity_bonus": 0.0}, "vicinity_bonus must be positive"),
-        ({"vicinity_bonus": -5.0}, "vicinity_bonus must be positive"),
-        ({"step_penalty": 0.1}, "step_penalty must be non-positive"),
-        ({"step_penalty": 10.0}, "step_penalty must be non-positive"),
-        ({"distance_reward_weight": 0.1}, "distance_reward_weight must be non-positive"),
-        ({"decay_rate": -0.1}, "decay_rate must be non-negative"),
     ],
 )
 def test_navigation_arena_rejects_invalid_params(kwargs, match):
     config = GridConfig.create(n_x=10, n_y=10)
     field = SimpleField(config, d_max=1)
     actor = GridActor(noise_std=0.0)
+    target = GridPosition(5, 5, None)
+    reward_fn = make_reward_fn(target, vicinity_radius=2.0)
     defaults = dict(
         field=field, actor=actor, config=config,
-        initial_position=GridPosition(5, 5, None),
-        target_position=GridPosition(5, 5, None),
-        vicinity_radius=2.0, vicinity_bonus=10.0,
-        step_penalty=-0.5, distance_reward_weight=-0.1,
-        decay_rate=0.5,
+        initial_position=target,
+        target_position=target,
+        vicinity_radius=2.0,
+        reward_fn=reward_fn,
     )
     defaults.update(kwargs)
     with pytest.raises(ValueError, match=match):
         NavigationArena(**defaults)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"peak_reward": 0.5, "step_cost": 1.0}, "peak_reward must be > step_cost"),
+        ({"step_cost": -0.1}, "step_cost >= 0"),
+        ({"proximity_scale": 0.0}, "proximity_scale > 0"),
+        ({"proximity_scale": -0.1}, "proximity_scale > 0"),
+    ],
+)
+def test_navigation_reward_rejects_invalid_params(kwargs, match):
+    """NavigationReward constructor rejects invalid reward parameters (reward-class-specific)."""
+    target = GridPosition(5, 5, None)
+    defaults = dict(
+        target_position=target,
+        vicinity_radius=2.0,
+        **DEFAULT_REWARD_KWARGS,
+    )
+    defaults.update(kwargs)
+    with pytest.raises(ValueError, match=match):
+        NavigationReward(**defaults)
 
 
 @pytest.mark.parametrize(
@@ -228,7 +246,10 @@ def test_navigation_arena_rejects_oob_target(target, ndim, match):
         init = GridPosition(5, 5, 5)
     field = SimpleField(config, d_max=1)
     actor = GridActor(noise_std=0.0)
+    reward_fn = make_reward_fn(init, vicinity_radius=2.0)
     with pytest.raises(ValueError, match=match):
-        NavigationArena(field=field, actor=actor, config=config,
-                        initial_position=init, target_position=target,
-                        vicinity_radius=2.0)
+        NavigationArena(
+            field=field, actor=actor, config=config,
+            initial_position=init, target_position=target,
+            vicinity_radius=2.0, reward_fn=reward_fn,
+        )

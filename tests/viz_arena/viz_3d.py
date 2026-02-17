@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from src.env import (
     GridEnvironment,
     NavigationArena,
+    NavigationReward,
     SimpleField,
     GridActor,
     NavigationRenderer,
@@ -49,7 +50,13 @@ def run_3d_visualization():
     # Create components
     field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_std=0.1)
-    
+    reward_fn = NavigationReward(
+        target_position=target_position,
+        vicinity_radius=vicinity_radius,
+        peak_reward=10.0,
+        step_cost=0.1,
+        proximity_scale=0.1,
+    )
     arena = NavigationArena(
         field=field,
         actor=actor,
@@ -58,12 +65,8 @@ def run_3d_visualization():
         target_position=target_position,
         vicinity_radius=vicinity_radius,
         boundary_mode='clip',
-        distance_reward_weight=-0.1,
-        vicinity_bonus=5.0,
-        step_penalty=-0.1,
+        reward_fn=reward_fn,
         terminate_on_reach=False,
-        use_distance_decay=True,
-        decay_rate=0.3
     )
     
     renderer = NavigationRenderer(
@@ -150,7 +153,13 @@ def run_3d_station_keeping():
     
     field = SimpleField(config, d_max=d_max)
     actor = GridActor(noise_std=0.1)
-    
+    reward_fn = NavigationReward(
+        target_position=target_position,
+        vicinity_radius=vicinity_radius,
+        peak_reward=10.0,
+        step_cost=0.2,
+        proximity_scale=0.1,
+    )
     arena = NavigationArena(
         field=field,
         actor=actor,
@@ -159,12 +168,8 @@ def run_3d_station_keeping():
         target_position=target_position,
         vicinity_radius=vicinity_radius,
         boundary_mode='clip',
-        distance_reward_weight=-0.5,
-        vicinity_bonus=10.0,
-        step_penalty=-0.2,
+        reward_fn=reward_fn,
         terminate_on_reach=False,
-        use_distance_decay=True,
-        decay_rate=0.5
     )
     
     renderer = NavigationRenderer(

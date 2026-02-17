@@ -1,14 +1,17 @@
 """Parameterized end-to-end episode integration tests.
 
-Tests full episode flow through GridEnvironment covering:
-- Minimal / extreme / asymmetric grids (parameterized)
-- Observation shape and bounds contracts
-- Termination: truncation, terminal boundary, terminate_on_reach
-- Determinism and reproducibility
-- State consistency across steps
-- Actor PMF contracts (new clipped-Gaussian model)
-- Constructor validation (max_steps, d_max)
+Reward under test is provided by reward_helpers (make_reward_fn). Change
+reward_helpers.py to switch reward; tests stay reward-agnostic.
+Covers: grid/observation contracts, termination, determinism, state, actor PMF, constructor validation.
 """
+
+import os
+import sys
+
+# Allow importing reward_helpers from same directory when pytest runs test file as top-level module
+_arena_dir = os.path.dirname(os.path.abspath(__file__))
+if _arena_dir not in sys.path:
+    sys.path.insert(0, _arena_dir)
 
 import pytest
 import numpy as np
@@ -22,9 +25,11 @@ from src.env.field.rff_gp_field import RFFGPField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
+from reward_helpers import make_reward_fn
+
 
 # =============================================================================
-# Helpers
+# Helpers (reward-agnostic: use reward_helpers for nav env reward)
 # =============================================================================
 
 def _make_grid_env(config, initial, *, boundary_mode="clip", d_max=1,
@@ -36,17 +41,27 @@ def _make_grid_env(config, initial, *, boundary_mode="clip", d_max=1,
     return GridEnvironment(arena=arena, max_steps=max_steps, seed=seed)
 
 
+_REWARD_KEYS = frozenset(("peak_reward", "step_cost", "proximity_scale"))
+
+
 def _make_nav_env(config, initial, target, *, vicinity_radius=2.0,
-                  vicinity_bonus=10.0, step_penalty=-0.5, d_max=1,
-                  max_steps=100, seed=42, boundary_mode="clip",
-                  terminate_on_reach=False, **actor_kw) -> GridEnvironment:
+                  reward_fn=None, d_max=1, max_steps=100, seed=42, boundary_mode="clip",
+                  terminate_on_reach=False, **kwargs) -> GridEnvironment:
+    """Build nav env; reward comes from make_reward_fn unless reward_fn is given.
+    kwargs: reward params (peak_reward, step_cost, proximity_scale) go to make_reward_fn;
+    the rest go to GridActor (e.g. noise_std).
+    """
     field = SimpleField(config, d_max=d_max)
+    reward_kw = {k: v for k, v in kwargs.items() if k in _REWARD_KEYS}
+    actor_kw = {k: v for k, v in kwargs.items() if k not in _REWARD_KEYS}
     actor = GridActor(**{"noise_std": 0.0, **actor_kw})
+    if reward_fn is None:
+        reward_fn = make_reward_fn(target, vicinity_radius, **reward_kw)
     arena = NavigationArena(
         field=field, actor=actor, config=config,
         initial_position=initial, target_position=target,
         vicinity_radius=vicinity_radius, boundary_mode=boundary_mode,
-        vicinity_bonus=vicinity_bonus, step_penalty=step_penalty,
+        reward_fn=reward_fn,
         terminate_on_reach=terminate_on_reach,
     )
     return GridEnvironment(arena=arena, max_steps=max_steps, seed=seed)
@@ -346,8 +361,8 @@ def test_station_keeping_accumulates(ndim):
         config = GridConfig.create(n, n, n)
         pos = GridPosition(5, 5, 5)
 
-    env = _make_nav_env(config, pos, pos, vicinity_bonus=bonus, d_max=0,
-                        max_steps=20)
+    env = _make_nav_env(config, pos, pos, peak_reward=bonus + 0.5, step_cost=0.5,
+                        proximity_scale=0.1, d_max=0, max_steps=20)
     env.reset(seed=0)
 
     total = 0.0

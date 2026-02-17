@@ -11,6 +11,7 @@ import jax
 from src.env import (
     GridEnvironment,
     NavigationArena,
+    NavigationReward,
     GridActor,
     NavigationRenderer,
     GridConfig,
@@ -65,7 +66,13 @@ def run_3d_visualization_rff():
         num_features=500, noise_std=0.5
     )
     actor = GridActor(noise_std=0.5, scale=2.5)
-    
+    reward_fn = NavigationReward(
+        target_position=target_position,
+        vicinity_radius=vicinity_radius,
+        peak_reward=5.0,
+        step_cost=0.1,
+        proximity_scale=0.3,
+    )
     arena = NavigationArena(
         field=field,
         actor=actor,
@@ -74,12 +81,8 @@ def run_3d_visualization_rff():
         target_position=target_position,
         vicinity_radius=vicinity_radius,
         boundary_mode='terminal',
-        distance_reward_weight=-0.1,
-        vicinity_bonus=5.0,
-        step_penalty=-0.1,
+        reward_fn=reward_fn,
         terminate_on_reach=False,
-        use_distance_decay=True,
-        decay_rate=0.3
     )
     
     renderer = NavigationRenderer(
@@ -160,7 +163,13 @@ def run_3d_station_keeping_rff():
         num_features=500, noise_std=0.1
     )
     actor = GridActor(noise_std=0.1)
-    
+    reward_fn = NavigationReward(
+        target_position=target_position,
+        vicinity_radius=vicinity_radius,
+        peak_reward=10.0,
+        step_cost=0.2,
+        proximity_scale=0.5,
+    )
     arena = NavigationArena(
         field=field,
         actor=actor,
@@ -169,12 +178,8 @@ def run_3d_station_keeping_rff():
         target_position=target_position,
         vicinity_radius=vicinity_radius,
         boundary_mode='clip',
-        distance_reward_weight=-0.5,
-        vicinity_bonus=10.0,
-        step_penalty=-0.2,
+        reward_fn=reward_fn,
         terminate_on_reach=False,
-        use_distance_decay=True,
-        decay_rate=0.5
     )
     
     renderer = NavigationRenderer(
