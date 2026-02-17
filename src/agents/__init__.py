@@ -3,6 +3,7 @@
 from .agent import Agent, AgentConfig, AgentMode, Logger, NoOpLogger, RandomAgent
 from .dp_agent import DPAgent, DPAgentConfig
 from .dqn import DQNAgent, DQNConfig
+from .ppo import PPOAgent, PPOConfig
 from .replay_buffer import ReplayBuffer
 
 __all__ = [
@@ -16,5 +17,7 @@ __all__ = [
     "DPAgentConfig",
     "DQNAgent",
     "DQNConfig",
+    "PPOAgent",
+    "PPOConfig",
     "ReplayBuffer",
 ]
