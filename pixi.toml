@@ -6,7 +6,9 @@ version = "0.1.0"
 
 [tasks]
 test = "pytest tests/ -v"
-test-field = "pytest tests/field/ -v"
+test_field = "pytest tests/test_field/ -v"
+test_arena = "pytest tests/test_arena/ -v"
+test_agents = "pytest tests/test_agents/ -v"
 
 [dependencies]
 pytest = ">=8.0.0,<9"
@@ -26,3 +28,5 @@ ipykernel = ">=7.1.0,<8"
 
 [pypi-dependencies]
 kaleido = "==0.2.1"
+flax = ">=0.10.0"
+optax = ">=0.2.0"
