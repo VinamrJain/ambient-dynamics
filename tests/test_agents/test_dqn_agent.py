@@ -1,8 +1,5 @@
 """Smoke tests for the DQN agent on a small 2D grid."""
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
 import numpy as np
 from src.env import (
     GridEnvironment, NavigationArena, NavigationReward,

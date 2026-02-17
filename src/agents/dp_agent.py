@@ -326,7 +326,15 @@ class DPAgent(Agent):
         self._step_t: int = 0
 
     # ------------------------------------------------------------------
-    # Planning  (call once per episode, after env.reset)
+    # Episode preparation (called by runner after env.reset)
+    # ------------------------------------------------------------------
+
+    def prepare_episode(self, env) -> None:
+        """Run backward induction for the current episode's field realisation."""
+        self.plan(env.arena, env.max_steps)
+
+    # ------------------------------------------------------------------
+    # Planning
     # ------------------------------------------------------------------
 
     def plan(self, arena: NavigationArena, horizon: int) -> None:

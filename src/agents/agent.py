@@ -160,6 +160,15 @@ class Agent(abc.ABC):
         self._rng, subkey = jax.random.split(self._rng)
         return subkey
 
+    # -- episode preparation -------------------------------------------------
+
+    def prepare_episode(self, env) -> None:
+        """Called after env.reset() but before begin_episode().
+
+        Override for agents that need access to the environment before acting
+        (e.g. model-based planning). No-op by default.
+        """
+
     # -- checkpointing -------------------------------------------------------
 
     def save_checkpoint(self, path: str) -> None:

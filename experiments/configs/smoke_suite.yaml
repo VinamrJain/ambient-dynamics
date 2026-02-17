@@ -1,0 +1,54 @@
+# Smoke-test suite: runs all agent baselines on a small 2D grid.
+# Usage: python -m src.eval.launcher --config experiments/configs/smoke_suite.yaml --workers 2
+
+defaults:
+  env:
+    grid: {n_x: 50, n_y: 50}
+    field: {d_max: 10, sigma: 2.0, lengthscale: 5.0, nu: 2.5, num_features: 500, noise_std: 0.5}
+    actor: {scale: 2.0, noise_std: 0.5, z_max: 10}
+    arena:
+      initial_position: [10, 10]
+      target_position: [40, 40]
+      vicinity_radius: 5.0
+      boundary_mode: terminal
+      terminate_on_reach: false
+    reward: {peak_reward: 10.0, step_cost: 0.1, proximity_scale: 1.0}
+    horizon: 50
+  eval:
+    num_episodes: 5
+    master_seed: 42
+
+runs:
+  - id: random
+    agent: {name: random, params: {seed: 42}}
+
+  - id: dp
+    agent: {name: dp, params: {}}
+
+  - id: dqn
+    agent:
+      name: dqn
+      params:
+        seed: 0
+        hidden_dims: [32, 32]
+        buffer_size: 1000
+        learning_starts: 50
+        batch_size: 32
+        train_frequency: 4
+        target_update_frequency: 100
+        total_timesteps: 2000
+    eval:
+      train_episodes: 30
+
+  - id: ppo
+    agent:
+      name: ppo
+      params:
+        seed: 0
+        hidden_dims: [32, 32]
+        num_steps: 24
+        num_minibatches: 4
+        update_epochs: 2
+        total_timesteps: 2000
+    eval:
+      train_episodes: 30
