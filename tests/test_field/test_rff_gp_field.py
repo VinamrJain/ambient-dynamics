@@ -151,7 +151,7 @@ def test_randomized_field_contracts(case: dict):
             assert float(v) == pytest.approx(mean[1], rel=1e-4, abs=1e-6)
 
 
-@pytest.mark.parametrize("case", RANDOM_CASES[:3] + RANDOM_CASES[10:13], ids=lambda c: f'{c["ndim"]}d-seed{c["seed"]}')
+@pytest.mark.parametrize("case", RANDOM_CASES[:3] + RANDOM_CASES[4:7], ids=lambda c: f'{c["ndim"]}d-seed{c["seed"]}')
 def test_reset_reproducibility_and_seed_change(case: dict):
     """Same key reproduces exactly, different key changes sampled field."""
     field = _build_field(case)
@@ -191,7 +191,7 @@ def test_positive_hyperparameters_validated(kwargs: dict, match: str):
         RFFGPField(config=config, d_max=2, **kwargs)
 
 
-@pytest.mark.parametrize("case", RANDOM_CASES[10:13], ids=lambda c: f'3d-seed{c["seed"]}')
+@pytest.mark.parametrize("case", RANDOM_CASES[4:7], ids=lambda c: f'3d-seed{c["seed"]}')
 def test_divergence_free_streamfunction(case: dict):
     """3D streamfunction parameterization is divergence-free: du/dx + dv/dy ~= 0."""
     field = _build_field(case)
