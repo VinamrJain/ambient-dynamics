@@ -5,14 +5,6 @@ Change reward_helpers.py to switch reward; tests stay reward-agnostic.
 Covers: reward contracts, vicinity detection, cumulative tracking, constructor validation — 2D and 3D.
 """
 
-import os
-import sys
-
-# Allow importing reward_helpers from same directory when pytest runs test file as top-level module
-_arena_dir = os.path.dirname(os.path.abspath(__file__))
-if _arena_dir not in sys.path:
-    sys.path.insert(0, _arena_dir)
-
 import pytest
 import numpy as np
 import jax
@@ -23,7 +15,7 @@ from src.env.field.simple_field import SimpleField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
-from reward_helpers import make_reward_fn, expected_reward_at_distance, DEFAULT_REWARD_KWARGS
+from tests.test_arena.reward_helpers import make_reward_fn, expected_reward_at_distance, DEFAULT_REWARD_KWARGS
 
 RNG = np.random.default_rng(9999)
 

@@ -1,12 +1,8 @@
 """Comprehensive contract tests for RFFGPField."""
 
-import os
-import sys
 import jax
 import numpy as np
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.env.field import RFFGPField
 from src.env.utils.types import GridConfig, GridPosition

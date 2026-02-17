@@ -78,6 +78,14 @@ class SimpleField(AbstractField):
             return np.ones((size, size), dtype=np.float32) / (size ** 2)
         else:
             return np.ones((size,), dtype=np.float32) / size
+
+    def get_displacement_pmf_grid(self) -> jnp.ndarray:
+        """Uniform PMF broadcast over the entire grid."""
+        size = 2 * self.d_max + 1
+        if self.ndim == 2:
+            return jnp.full((*self.config.shape, size), 1.0 / size)
+        else:
+            return jnp.full((*self.config.shape, size, size), 1.0 / (size * size))
     
     def get_mean_displacement(self, position: GridPosition) -> Tuple[float, ...]:
         """Return mean displacement (zero for uniform distribution).

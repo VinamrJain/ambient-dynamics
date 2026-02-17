@@ -79,14 +79,24 @@ class AbstractField(ABC):
     
     def get_displacement_pmf(self, position: GridPosition) -> Optional[np.ndarray]:
         """Get displacement PMF at position
-        
+
         Args:
             position: Grid position to query.
-            
+
         Returns:
             PMF array or None if not available.
             - 3D: shape (2*d_max+1, 2*d_max+1), entry [i,j] = P(u=i-d_max, v=j-d_max)
             - 2D: shape (2*d_max+1,), entry [i] = P(u=i-d_max)
+        """
+        return None
+
+    def get_displacement_pmf_grid(self) -> Optional[jnp.ndarray]:
+        """Get displacement PMF for every cell in the grid (vectorized).
+
+        Returns:
+            JAX array or None if not available.
+            - 2D: shape (n_x, n_y, 2*d_max+1)
+            - 3D: shape (n_x, n_y, n_z, 2*d_max+1, 2*d_max+1)
         """
         return None
     

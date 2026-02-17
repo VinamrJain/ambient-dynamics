@@ -16,6 +16,44 @@ from .abstract_field import AbstractField
 from ..utils.types import GridPosition, DisplacementObservation, GridConfig
 
 
+def _compute_1d_pmf_grid(means: jnp.ndarray, d_max: int, noise_std: float) -> jnp.ndarray:
+    """Vectorized 1D clipped-normal PMF over an array of means.
+
+    Args:
+        means: shape ``(*grid_shape)`` — mean displacement at each cell.
+        d_max: Maximum displacement magnitude.
+        noise_std: Standard deviation of observation noise.
+
+    Returns:
+        shape ``(*grid_shape, 2*d_max+1)`` PMF array.
+    """
+    n_bins = 2 * d_max + 1
+
+    if d_max == 0:
+        return jnp.ones((*means.shape, 1), dtype=jnp.float32)
+
+    if noise_std == 0.0:
+        rounded = jnp.round(jnp.clip(means, -d_max, d_max)).astype(jnp.int32)
+        return jax.nn.one_hot(rounded + d_max, n_bins)
+
+    k = jnp.arange(-d_max, d_max + 1, dtype=jnp.float32)  # (n_bins,)
+    mu = means[..., None]  # (*grid, 1)
+
+    edges_upper = (k + 0.5 - mu) / noise_std  # (*grid, n_bins)
+    edges_lower = (k - 0.5 - mu) / noise_std  # (*grid, n_bins)
+
+    cdf_upper = jax_norm.cdf(edges_upper)
+    cdf_lower = jax_norm.cdf(edges_lower)
+
+    pmf = cdf_upper - cdf_lower
+    # Left boundary: accumulate all mass below -d_max + 0.5
+    pmf = pmf.at[..., 0].set(cdf_upper[..., 0])
+    # Right boundary: accumulate all mass above d_max - 0.5
+    pmf = pmf.at[..., -1].set(1.0 - cdf_lower[..., -1])
+
+    return pmf
+
+
 class RFFGPField(AbstractField):
     """GP field using Random Fourier Features approximation.
     
@@ -383,3 +421,17 @@ class RFFGPField(AbstractField):
             # Outer product for joint PMF
             joint_pmf = jnp.outer(pmf_u, pmf_v)
             return np.asarray(joint_pmf, dtype=np.float32)
+
+    def get_displacement_pmf_grid(self) -> jnp.ndarray:
+        """Vectorized PMF computation over the entire grid.
+
+        Returns:
+            - 2D: shape (n_x, n_y, 2*d_max+1)
+            - 3D: shape (n_x, n_y, n_z, 2*d_max+1, 2*d_max+1)
+        """
+        if self.ndim == 2:
+            return _compute_1d_pmf_grid(self._precomputed_u, self.d_max, self.noise_std)
+        else:
+            pmf_u = _compute_1d_pmf_grid(self._precomputed_u, self.d_max, self.noise_std)
+            pmf_v = _compute_1d_pmf_grid(self._precomputed_v, self.d_max, self.noise_std)
+            return pmf_u[..., :, None] * pmf_v[..., None, :]

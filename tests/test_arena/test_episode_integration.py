@@ -5,14 +5,6 @@ reward_helpers.py to switch reward; tests stay reward-agnostic.
 Covers: grid/observation contracts, termination, determinism, state, actor PMF, constructor validation.
 """
 
-import os
-import sys
-
-# Allow importing reward_helpers from same directory when pytest runs test file as top-level module
-_arena_dir = os.path.dirname(os.path.abspath(__file__))
-if _arena_dir not in sys.path:
-    sys.path.insert(0, _arena_dir)
-
 import pytest
 import numpy as np
 import jax
@@ -25,7 +17,7 @@ from src.env.field.rff_gp_field import RFFGPField
 from src.env.actor.grid_actor import GridActor
 from src.env.utils.types import GridConfig, GridPosition
 
-from reward_helpers import make_reward_fn
+from tests.test_arena.reward_helpers import make_reward_fn
 
 
 # =============================================================================
