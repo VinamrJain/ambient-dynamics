@@ -6,9 +6,7 @@ from .grid_arena import GridArena
 from .reward import RewardFunction
 from ..field.abstract_field import AbstractField
 from ..actor.abstract_actor import AbstractActor
-from ..utils.types import (
-    GridPosition, GridConfig, ArenaState, GridArenaState, NavigationArenaState
-)
+from ..utils.types import GridPosition, GridConfig, ArenaState, NavigationArenaState
 
 
 class NavigationArena(GridArena):
@@ -27,7 +25,8 @@ class NavigationArena(GridArena):
         initial_position: GridPosition,
         target_position: GridPosition,
         vicinity_radius: float,
-        boundary_mode: str = 'terminal',
+        boundary_mode: str = "terminal",
+        vicinity_metric: str = "euclidean",
         *,
         reward_fn: RewardFunction,
         terminate_on_reach: bool = False,
@@ -42,6 +41,7 @@ class NavigationArena(GridArena):
             target_position: Goal position to reach.
             vicinity_radius: Radius around target that counts as "reached".
             boundary_mode: Boundary handling ('clip', 'periodic', 'terminal').
+            vicinity_metric: Distance metric for vicinity ('euclidean', 'l1', 'linf').
             reward_fn: Reward function (e.g. NavigationReward); caller constructs with desired params.
             terminate_on_reach: If True, episode ends when target is first reached.
         """
@@ -50,14 +50,18 @@ class NavigationArena(GridArena):
             actor=actor,
             config=config,
             initial_position=initial_position,
-            boundary_mode=boundary_mode
+            boundary_mode=boundary_mode,
         )
 
-        if vicinity_radius <= 0.0:
-            raise ValueError(f"vicinity_radius must be positive, got {vicinity_radius}")
+        if vicinity_radius < 0.0:
+            raise ValueError(
+                f"vicinity_radius must be non-negative, got {vicinity_radius}"
+            )
 
-        if not (1 <= target_position.i <= config.n_x and
-                1 <= target_position.j <= config.n_y):
+        if not (
+            1 <= target_position.i <= config.n_x
+            and 1 <= target_position.j <= config.n_y
+        ):
             raise ValueError(
                 f"target_position {target_position} is outside grid "
                 f"({config.n_x}, {config.n_y}, {config.n_z})"
@@ -70,6 +74,7 @@ class NavigationArena(GridArena):
 
         self.target_position = target_position
         self.vicinity_radius = vicinity_radius
+        self.vicinity_metric = vicinity_metric
         self.terminate_on_reach = terminate_on_reach
         self.reward_fn = reward_fn
 
@@ -84,17 +89,21 @@ class NavigationArena(GridArena):
         return obs
 
     def _compute_distance(self, pos1: GridPosition, pos2: GridPosition) -> float:
-        """Compute Euclidean distance between two positions (handles 2D and 3D)."""
+        """Compute distance between two positions using configured metric."""
+        diffs = [pos1.i - pos2.i, pos1.j - pos2.j]
         if self.ndim == 3:
-            return np.sqrt(
-                (pos1.i - pos2.i) ** 2 +
-                (pos1.j - pos2.j) ** 2 +
-                (pos1.k - pos2.k) ** 2
-            )
-        return np.sqrt(
-            (pos1.i - pos2.i) ** 2 +
-            (pos1.j - pos2.j) ** 2
-        )
+            diffs.append(pos1.k - pos2.k)
+
+        diffs = np.array(diffs)
+
+        if self.vicinity_metric == "euclidean":
+            return np.sqrt(np.sum(diffs**2))
+        elif self.vicinity_metric == "l1":
+            return np.sum(np.abs(diffs))
+        elif self.vicinity_metric == "linf":
+            return np.max(np.abs(diffs))
+        else:
+            raise ValueError(f"Unknown vicinity_metric: {self.vicinity_metric}")
 
     def compute_reward(self) -> float:
         """Compute reward (proximity minus step cost)."""
