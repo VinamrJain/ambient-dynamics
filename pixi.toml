@@ -1,32 +1,53 @@
 [project]
 channels = ["conda-forge"]
-name = "pomdp-env"
+name = "ambient-dynamics"
 platforms = ["osx-arm64"]
 version = "0.1.0"
 
 [tasks]
+register-kernel = "python -m ipykernel install --user --name=ambient-$PIXI_ENVIRONMENT_NAME --display-name=\"ambient-$PIXI_ENVIRONMENT_NAME\""
 test = "pytest tests/ -v"
 test_field = "pytest tests/test_field/ -v"
 test_arena = "pytest tests/test_arena/ -v"
 test_agents = "pytest tests/test_agents/ -v"
 
 [dependencies]
-pytest = ">=8.0.0,<9"
-numpy = ">=2.3.3,<3"
-gymnasium = ">=1.2.0,<2"
-typing = ">=3.10.0.0,<4"
-pyyaml = ">=6.0,<7"
-matplotlib = ">=3.7.0,<4"
-pillow = ">=10.0.0,<11"
-jax = ">=0.4.0,<1"
-jaxlib = ">=0.4.0,<1"
-plotly = ">=5.0.0,<6"
-imageio = ">=2.0.0,<3"
-imageio-ffmpeg = ">=0.6.0,<0.7"
-jupyter = ">=1.1.1,<2"
-ipykernel = ">=7.1.0,<8"
+python = ">=3.11"
+numpy = ">=2.0.0"
+pyyaml = ">=6.0"
+pandas = ">=2.0.0"
+scikit-learn = ">=1.5.0"
 
-[pypi-dependencies]
-kaleido = "==0.2.1"
-flax = ">=0.10.0"
-optax = ">=0.2.0"
+[feature.dev.dependencies]
+pytest = ">=8.0.0"
+jupyter = ">=1.1.0"
+ipykernel = ">=6.0.0"
+
+[feature.viz.dependencies]
+matplotlib = ">=3.7.0"
+plotly = ">=5.0.0"
+imageio = ">=2.0.0"
+imageio-ffmpeg = ">=0.6.0"
+python-kaleido = "==0.2.1"
+jupytext = ">=1.19.1,<2"
+
+[feature.gp.pypi-dependencies]
+gpjax = "==0.13.6"
+flax = ">=0.12.2"
+jax = ">=0.5.0"
+jaxlib = ">=0.5.0"
+optax = ">0.2.1"
+numpyro = ">=0.15.0"
+jaxtyping = ">0.2.10"
+beartype = ">0.16.1"
+tqdm = ">4.66.2"
+
+[feature.rl.dependencies]
+gymnasium = ">=1.0.0"
+
+[environments]
+default = ["dev", "viz", "gp", "rl"]
+dev = ["dev"]
+viz = ["viz"]
+gp = ["gp"]
+rl = ["rl"]

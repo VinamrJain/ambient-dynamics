@@ -10,8 +10,9 @@ __pycache__
 output/
 .cursor/
 
-.html
-.gif
-.mp4
+*.html
+*.gif
+*.mp4
+*.png
 
 .pytest_cache/
