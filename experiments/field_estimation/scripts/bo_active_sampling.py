@@ -39,11 +39,11 @@ config.update("jax_enable_x64", True)
 # 1. Setup True Field and Arena
 # =============================
 grid_size = 50
-subgrid_size = 26
+subgrid_size = 20
 margin = (grid_size - subgrid_size) // 2
 
 sigma_true = 3.0
-lengthscale_true = 7.5
+lengthscale_true = 2.5
 nu_true = 2.5
 noise_std_true = 0.2
 seed = 42
@@ -66,7 +66,7 @@ true_u = field._precomputed_u.squeeze()
 
 # Build Actor & Arena
 actor = GridActor(noise_std=0.0)
-vicinity_radius = 2.0
+vicinity_radius = 0.0
 step_cost = 1.0
 
 initial_pos = GridPosition(int(grid_size // 2), int(grid_size // 2))
@@ -111,8 +111,8 @@ X_test_sub = jnp.column_stack([Xm_sub.ravel(), Ym_sub.ravel()]).astype(jnp.float
 
 true_u_subgrid = true_u[margin:-margin, margin:-margin]
 
-var_init = sigma_true**2
-lengthscale_init = lengthscale_true
+var_init = 1.0
+lengthscale_init = 1.0
 
 
 # %%
@@ -138,7 +138,7 @@ def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None):
             objective=nmll,
             train_data=dataset,
             optim=optim,
-            num_iters=300,
+            num_iters=100,
         )
         latent_dist = opt_posterior.predict(X_test_full, train_data=dataset)
     else:
@@ -159,7 +159,7 @@ def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None):
     mu_flat = mu_subgrid.ravel()
 
     if alpha is not None:
-        mask = true_u_flat > alpha
+        mask = jnp.abs(true_u_flat) > alpha
         if jnp.sum(mask) == 0:
             rmse_val = 0.0
         else:
@@ -209,7 +209,7 @@ def run_trajectory_loops(
         X_tr = jnp.array(X_obs, dtype=jnp.float64)
         y_tr = jnp.array(y_obs, dtype=jnp.float64)
 
-        mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=False, alpha=alpha)
+        mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=True, alpha=alpha)
         rmse_history.append((len(X_obs), rmse))
         print(
             f"Loop {loop_idx} | Samples: {len(X_obs)}/{max_total_samples} | RMSE: {rmse:.4f}"
@@ -222,25 +222,39 @@ def run_trajectory_loops(
         mu_flat = mu_subgrid.ravel()
         var_flat = var_subgrid.ravel()
 
+        current_pos = arena.position
+
+        # Mask points already in vicinity to avoid "vicinity trap"
+        dist_to_current = jnp.sqrt(
+            (X_test_sub[:, 0] - current_pos.i) ** 2
+            + (X_test_sub[:, 1] - current_pos.j) ** 2
+        )
+        valid_mask = dist_to_current > vicinity_radius
+
         if acq_type == "random":
             key, subkey = jr.split(key)
-            best_idx = jr.randint(subkey, (), 0, len(X_test_sub))
-            best_idx = int(best_idx)
+            valid_indices = jnp.where(valid_mask)[0]
+            if len(valid_indices) == 0:
+                print("  -> No valid targets left outside vicinity. Terminating early.")
+                break
+            idx_of_idx = jr.randint(subkey, (), 0, len(valid_indices))
+            best_idx = int(valid_indices[idx_of_idx])
         elif acq_type == "max_variance":
-            best_idx = int(jnp.argmax(var_flat))
+            acq = jnp.where(valid_mask, var_flat, -jnp.inf)
+            best_idx = int(jnp.argmax(acq))
         elif acq_type == "ei":
             acq = ei_acq(mu_flat, var_flat, y_tr)
+            acq = jnp.where(valid_mask, acq, -jnp.inf)
             best_idx = int(jnp.argmax(acq))
         elif acq_type == "cost_aware_ei":
             acq = ei_acq(mu_flat, var_flat, y_tr)
-            current_pos = arena.position
-
             costs_full = agent._cost_table[current_pos.i - 1, current_pos.j - 1, :, :]
             costs_subgrid = costs_full[margin:-margin, margin:-margin]
             costs = costs_subgrid.ravel()
 
             costs = jnp.maximum(costs, 1.0)
             acq_cost_aware = acq / costs
+            acq_cost_aware = jnp.where(valid_mask, acq_cost_aware, -jnp.inf)
             best_idx = int(jnp.argmax(acq_cost_aware))
         else:
             raise ValueError(f"Unknown acq_type: {acq_type}")
@@ -257,6 +271,7 @@ def run_trajectory_loops(
 
         action = agent.begin_episode(obs)
         steps_this_loop = 0
+        crashed = False
 
         while steps_this_loop < max_steps_per_loop and len(X_obs) < max_total_samples:
             obs = arena.step(action)
@@ -274,11 +289,16 @@ def run_trajectory_loops(
                 print(f"  -> Reached in {steps_this_loop} steps.")
                 break
             if arena.is_terminal():
-                print("  -> Out of bounds.")
+                print(f"  -> Out of bounds at {state.last_position}! Robot crashed.")
                 arena.set_position(initial_pos)
+                crashed = True
                 break
 
             action = agent.step(reward, obs)
+
+        if crashed:
+            print("  -> Ending data collection for this strategy early due to crash.")
+            break
 
         loop_idx += 1
 
@@ -295,8 +315,8 @@ def run_trajectory_loops(
 # %%
 # 4. Run Experiments
 # ==================
-max_total_samples = 500
-max_steps_per_loop = 50
+max_total_samples = 100
+max_steps_per_loop = 20
 eval_alpha = 2.0  # Set to a threshold to estimate level sets, or None for whole subgrid
 
 results = {}
@@ -343,14 +363,14 @@ plt.colorbar(im0, ax=axes[0, 0])
 
 # True Field Level Set Mask (if alpha provided)
 if eval_alpha is not None:
-    mask_plot = (true_u > eval_alpha).astype(float)
+    mask_plot = (jnp.abs(true_u) > eval_alpha).astype(float)
     im0_mask = axes[0, 1].imshow(
         mask_plot.T,
         origin="lower",
         cmap="gray",
         extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
     )
-    axes[0, 1].set_title(f"True Level Set (u > {eval_alpha})")
+    axes[0, 1].set_title(f"True Level Set (|u| > {eval_alpha})")
     rect_mask = patches.Rectangle(
         (margin + 0.5, margin + 0.5),
         subgrid_size,
