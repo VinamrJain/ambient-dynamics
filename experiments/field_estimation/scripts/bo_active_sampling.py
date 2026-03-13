@@ -1,6 +1,16 @@
 # %%
 """Bayesian Optimization Active Sampling with AP-SSP Planning."""
 
+import jax
+from jax import config
+import jax.numpy as jnp
+import jax.random as jr
+import jax.scipy.stats
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import numpy as np
+import gpjax as gpx
+import optax as ox
 import sys
 import os
 from pathlib import Path
@@ -16,19 +26,6 @@ def add_project_root_to_path() -> Path:
 
 add_project_root_to_path()
 
-import jax
-from jax import config
-
-config.update("jax_enable_x64", True)
-
-import jax.numpy as jnp
-import jax.random as jr
-import jax.scipy.stats
-import matplotlib.pyplot as plt
-import numpy as np
-import gpjax as gpx
-import optax as ox
-
 from src.env.field.rff_gp_field import RFFGPField
 from src.env.actor.grid_actor import GridActor
 from src.env.arena.dynamic_sg_arena import DynamicSGArena
@@ -36,16 +33,21 @@ from src.env.arena.reward import StepCostReward
 from src.env.utils.types import GridConfig, GridPosition
 from src.agents.ap_ssp_agent import APSSPAgent, APSSPAgentConfig
 
+config.update("jax_enable_x64", True)
+
 # %%
 # 1. Setup True Field and Arena
 # =============================
-grid_size = 40
-sigma_true = 5.0
+grid_size = 50
+subgrid_size = 26
+margin = (grid_size - subgrid_size) // 2
+
+sigma_true = 3.0
 lengthscale_true = 7.5
 nu_true = 2.5
 noise_std_true = 0.2
 seed = 42
-boundary_mode = "periodic"
+boundary_mode = "terminal"
 
 key = jr.PRNGKey(seed)
 key, field_key = jr.split(key)
@@ -90,16 +92,24 @@ key, reset_key = jr.split(key)
 arena.reset(reset_key)
 
 # Plan AP-SSP
-print("Planning AP-SSP for all state-goal pairs ...")
+print(f"Planning AP-SSP for all state-goal pairs ({grid_size}x{grid_size}) ...")
 agent = APSSPAgent(APSSPAgentConfig(max_iters=500, tol=1e-3))
 agent.plan(arena)
 print("Planning complete!")
 
-# Setup GP Test Grid
-x_coords = jnp.arange(1, grid_size + 1)
-y_coords = jnp.arange(1, grid_size + 1)
-Xm, Ym = jnp.meshgrid(x_coords, y_coords, indexing="ij")
-X_test = jnp.column_stack([Xm.ravel(), Ym.ravel()]).astype(jnp.float64)
+# Setup Full GP Test Grid for predictions
+x_coords_full = jnp.arange(1, grid_size + 1)
+y_coords_full = jnp.arange(1, grid_size + 1)
+Xm_full, Ym_full = jnp.meshgrid(x_coords_full, y_coords_full, indexing="ij")
+X_test_full = jnp.column_stack([Xm_full.ravel(), Ym_full.ravel()]).astype(jnp.float64)
+
+# Setup Subgrid for Targeting and RMSE
+x_coords_sub = jnp.arange(margin + 1, grid_size - margin + 1)
+y_coords_sub = jnp.arange(margin + 1, grid_size - margin + 1)
+Xm_sub, Ym_sub = jnp.meshgrid(x_coords_sub, y_coords_sub, indexing="ij")
+X_test_sub = jnp.column_stack([Xm_sub.ravel(), Ym_sub.ravel()]).astype(jnp.float64)
+
+true_u_subgrid = true_u[margin:-margin, margin:-margin]
 
 var_init = sigma_true**2
 lengthscale_init = lengthscale_true
@@ -108,7 +118,7 @@ lengthscale_init = lengthscale_true
 # %%
 # 2. General Evaluation and Acquisition Functions
 # ===============================================
-def evaluate_gp(X_tr, y_tr, optimize=False):
+def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None):
     dataset = gpx.Dataset(X=X_tr, y=y_tr)
 
     if optimize:
@@ -119,7 +129,9 @@ def evaluate_gp(X_tr, y_tr, optimize=False):
         )
         posterior = prior * likelihood
 
-        nmll = lambda p, d: -gpx.objectives.conjugate_mll(p, d)
+        def nmll(p, d):
+            return -gpx.objectives.conjugate_mll(p, d)
+
         optim = ox.adam(learning_rate=0.05)
         opt_posterior, _ = gpx.fit(
             model=posterior,
@@ -128,7 +140,7 @@ def evaluate_gp(X_tr, y_tr, optimize=False):
             optim=optim,
             num_iters=300,
         )
-        latent_dist = opt_posterior.predict(X_test, train_data=dataset)
+        latent_dist = opt_posterior.predict(X_test_full, train_data=dataset)
     else:
         kernel = gpx.kernels.Matern52(variance=var_init, lengthscale=lengthscale_init)
         prior = gpx.gps.Prior(mean_function=gpx.mean_functions.Zero(), kernel=kernel)
@@ -136,13 +148,26 @@ def evaluate_gp(X_tr, y_tr, optimize=False):
             num_datapoints=dataset.n, obs_stddev=jnp.array([noise_std_true])
         )
         posterior = prior * likelihood
-        latent_dist = posterior.predict(X_test, train_data=dataset)
+        latent_dist = posterior.predict(X_test_full, train_data=dataset)
 
-    mu = latent_dist.mean.reshape(grid_size, grid_size)
-    var = latent_dist.variance.reshape(grid_size, grid_size)
-    rmse_val = jnp.sqrt(jnp.mean((true_u - mu) ** 2))
+    mu_full = latent_dist.mean.reshape(grid_size, grid_size)
+    var_full = latent_dist.variance.reshape(grid_size, grid_size)
 
-    return mu, var, float(rmse_val)
+    # Calculate RMSE on subgrid
+    mu_subgrid = mu_full[margin:-margin, margin:-margin]
+    true_u_flat = true_u_subgrid.ravel()
+    mu_flat = mu_subgrid.ravel()
+
+    if alpha is not None:
+        mask = true_u_flat > alpha
+        if jnp.sum(mask) == 0:
+            rmse_val = 0.0
+        else:
+            rmse_val = jnp.sqrt(jnp.mean((true_u_flat[mask] - mu_flat[mask]) ** 2))
+    else:
+        rmse_val = jnp.sqrt(jnp.mean((true_u_flat - mu_flat) ** 2))
+
+    return mu_full, var_full, float(rmse_val)
 
 
 def ei_acq(mu_flat, var_flat, y_train):
@@ -158,7 +183,9 @@ def ei_acq(mu_flat, var_flat, y_train):
 # %%
 # 3. Trajectory Loop Function
 # ===========================
-def run_trajectory_loops(acq_type, num_loops=5, max_steps_per_loop=100):
+def run_trajectory_loops(
+    acq_type, max_total_samples=150, max_steps_per_loop=30, alpha=None
+):
     global key
     print(f"\n--- Running Strategy: {acq_type} ---")
 
@@ -176,21 +203,28 @@ def run_trajectory_loops(acq_type, num_loops=5, max_steps_per_loop=100):
     y_obs.append([disp.u])
 
     rmse_history = []
+    loop_idx = 1
 
-    for h in range(num_loops):
+    while len(X_obs) < max_total_samples:
         X_tr = jnp.array(X_obs, dtype=jnp.float64)
         y_tr = jnp.array(y_obs, dtype=jnp.float64)
 
-        mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=False)
-        rmse_history.append(rmse)
-        print(f"Loop {h + 1}/{num_loops} | Samples: {len(X_obs)} | RMSE: {rmse:.4f}")
+        mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=False, alpha=alpha)
+        rmse_history.append((len(X_obs), rmse))
+        print(
+            f"Loop {loop_idx} | Samples: {len(X_obs)}/{max_total_samples} | RMSE: {rmse:.4f}"
+        )
 
-        mu_flat = mu.ravel()
-        var_flat = var.ravel()
+        # Extract subgrid predictions for targeting
+        mu_subgrid = mu[margin:-margin, margin:-margin]
+        var_subgrid = var[margin:-margin, margin:-margin]
+
+        mu_flat = mu_subgrid.ravel()
+        var_flat = var_subgrid.ravel()
 
         if acq_type == "random":
             key, subkey = jr.split(key)
-            best_idx = jr.randint(subkey, (), 0, len(X_test))
+            best_idx = jr.randint(subkey, (), 0, len(X_test_sub))
             best_idx = int(best_idx)
         elif acq_type == "max_variance":
             best_idx = int(jnp.argmax(var_flat))
@@ -200,16 +234,18 @@ def run_trajectory_loops(acq_type, num_loops=5, max_steps_per_loop=100):
         elif acq_type == "cost_aware_ei":
             acq = ei_acq(mu_flat, var_flat, y_tr)
             current_pos = arena.position
-            costs = agent._cost_table[
-                current_pos.i - 1, current_pos.j - 1, :, :
-            ].ravel()
+
+            costs_full = agent._cost_table[current_pos.i - 1, current_pos.j - 1, :, :]
+            costs_subgrid = costs_full[margin:-margin, margin:-margin]
+            costs = costs_subgrid.ravel()
+
             costs = jnp.maximum(costs, 1.0)
             acq_cost_aware = acq / costs
             best_idx = int(jnp.argmax(acq_cost_aware))
         else:
             raise ValueError(f"Unknown acq_type: {acq_type}")
 
-        target_coords = X_test[best_idx]
+        target_coords = X_test_sub[best_idx]
         target_pos = GridPosition(int(target_coords[0]), int(target_coords[1]))
 
         print(f"  -> Target: {target_pos} from {arena.position}")
@@ -220,7 +256,9 @@ def run_trajectory_loops(acq_type, num_loops=5, max_steps_per_loop=100):
         obs = arena.soft_reset()
 
         action = agent.begin_episode(obs)
-        for step in range(max_steps_per_loop):
+        steps_this_loop = 0
+
+        while steps_this_loop < max_steps_per_loop and len(X_obs) < max_total_samples:
             obs = arena.step(action)
             reward = arena.compute_reward()
             state = arena.get_state()
@@ -230,21 +268,25 @@ def run_trajectory_loops(acq_type, num_loops=5, max_steps_per_loop=100):
             disp = field.sample_displacement(state.last_position, noise_key)
             X_obs.append([state.last_position.i, state.last_position.j])
             y_obs.append([disp.u])
+            steps_this_loop += 1
 
             if state.target_reached:
-                print(f"  -> Reached in {step + 1} steps.")
+                print(f"  -> Reached in {steps_this_loop} steps.")
                 break
             if arena.is_terminal():
-                print(f"  -> Out of bounds.")
+                print("  -> Out of bounds.")
+                arena.set_position(initial_pos)
                 break
 
             action = agent.step(reward, obs)
 
+        loop_idx += 1
+
     # Final eval
     X_tr = jnp.array(X_obs, dtype=jnp.float64)
     y_tr = jnp.array(y_obs, dtype=jnp.float64)
-    mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=False)
-    rmse_history.append(rmse)
+    mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=False, alpha=alpha)
+    rmse_history.append((len(X_obs), rmse))
 
     print(f"Final | Samples: {len(X_obs)} | RMSE: {rmse:.4f}")
     return mu, var, X_tr, y_tr, rmse_history
@@ -253,8 +295,9 @@ def run_trajectory_loops(acq_type, num_loops=5, max_steps_per_loop=100):
 # %%
 # 4. Run Experiments
 # ==================
-h_loops = 5
-max_steps = 100
+max_total_samples = 500
+max_steps_per_loop = 50
+eval_alpha = 2.0  # Set to a threshold to estimate level sets, or None for whole subgrid
 
 results = {}
 strategies = ["random", "max_variance", "ei", "cost_aware_ei"]
@@ -262,7 +305,10 @@ labels = ["Random Target", "Max Variance", "Expected Improvement (EI)", "Cost-Aw
 
 for strat in strategies:
     results[strat] = run_trajectory_loops(
-        strat, num_loops=h_loops, max_steps_per_loop=max_steps
+        strat,
+        max_total_samples=max_total_samples,
+        max_steps_per_loop=max_steps_per_loop,
+        alpha=eval_alpha,
     )
 
 # %%
@@ -281,8 +327,43 @@ im0 = axes[0, 0].imshow(
     extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
 )
 axes[0, 0].set_title("True Field")
+# Draw Subgrid boundary
+rect = patches.Rectangle(
+    (margin + 0.5, margin + 0.5),
+    subgrid_size,
+    subgrid_size,
+    linewidth=2,
+    edgecolor="r",
+    facecolor="none",
+    linestyle="--",
+)
+axes[0, 0].add_patch(rect)
+
 plt.colorbar(im0, ax=axes[0, 0])
-axes[0, 1].axis("off")
+
+# True Field Level Set Mask (if alpha provided)
+if eval_alpha is not None:
+    mask_plot = (true_u > eval_alpha).astype(float)
+    im0_mask = axes[0, 1].imshow(
+        mask_plot.T,
+        origin="lower",
+        cmap="gray",
+        extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
+    )
+    axes[0, 1].set_title(f"True Level Set (u > {eval_alpha})")
+    rect_mask = patches.Rectangle(
+        (margin + 0.5, margin + 0.5),
+        subgrid_size,
+        subgrid_size,
+        linewidth=2,
+        edgecolor="r",
+        facecolor="none",
+        linestyle="--",
+    )
+    axes[0, 1].add_patch(rect_mask)
+else:
+    axes[0, 1].axis("off")
+
 axes[0, 2].axis("off")
 
 for i, strat in enumerate(strategies):
@@ -299,6 +380,16 @@ for i, strat in enumerate(strategies):
     axes[r, 0].plot(X_tr[:, 0], X_tr[:, 1], color="white", alpha=0.5, linewidth=1)
     axes[r, 0].scatter(X_tr[:, 0], X_tr[:, 1], c="red", s=10, edgecolors="k")
     axes[r, 0].set_title(f"{labels[i]}: Predicted Mean\n({len(X_tr)} samples)")
+    rect_m = patches.Rectangle(
+        (margin + 0.5, margin + 0.5),
+        subgrid_size,
+        subgrid_size,
+        linewidth=2,
+        edgecolor="r",
+        facecolor="none",
+        linestyle="--",
+    )
+    axes[r, 0].add_patch(rect_m)
     plt.colorbar(im_m, ax=axes[r, 0])
 
     # Col 1: Error
@@ -309,7 +400,20 @@ for i, strat in enumerate(strategies):
         cmap="Reds",
         extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
     )
-    axes[r, 1].set_title(f"{labels[i]}: Abs Error\nFinal RMSE: {rmse_hist[-1]:.4f}")
+    title_rmse = f"Final Subgrid RMSE: {rmse_hist[-1][1]:.4f}"
+    if eval_alpha is not None:
+        title_rmse += f" (Level Set > {eval_alpha})"
+    axes[r, 1].set_title(f"{labels[i]}: Abs Error\n{title_rmse}")
+    rect_e = patches.Rectangle(
+        (margin + 0.5, margin + 0.5),
+        subgrid_size,
+        subgrid_size,
+        linewidth=2,
+        edgecolor="r",
+        facecolor="none",
+        linestyle="--",
+    )
+    axes[r, 1].add_patch(rect_e)
     plt.colorbar(im_e, ax=axes[r, 1])
 
     # Col 2: Variance
@@ -320,6 +424,16 @@ for i, strat in enumerate(strategies):
         extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
     )
     axes[r, 2].set_title(f"{labels[i]}: Variance")
+    rect_v = patches.Rectangle(
+        (margin + 0.5, margin + 0.5),
+        subgrid_size,
+        subgrid_size,
+        linewidth=2,
+        edgecolor="r",
+        facecolor="none",
+        linestyle="--",
+    )
+    axes[r, 2].add_patch(rect_v)
     plt.colorbar(im_v, ax=axes[r, 2])
 
 plt.tight_layout()
@@ -335,24 +449,30 @@ markers = ["o", "s", "^", "D"]
 
 for i, strat in enumerate(strategies):
     rmse_hist = results[strat][4]
-    loops = np.arange(len(rmse_hist))
+    loops_x = [x[0] for x in rmse_hist]
+    loops_y = [x[1] for x in rmse_hist]
     plt.plot(
-        loops,
-        rmse_hist,
+        loops_x,
+        loops_y,
         marker=markers[i],
         color=colors[i],
         label=labels[i],
         linewidth=2,
     )
 
-plt.xlabel("Trajectory Loop Iteration")
-plt.ylabel("RMSE")
-plt.title("RMSE vs Trajectory Loops (Online Active Learning)")
+plt.xlabel("Total Samples")
+if eval_alpha is not None:
+    plt.ylabel(f"Subgrid RMSE (Level Set > {eval_alpha})")
+    plt.title(
+        f"RMSE vs Total Samples (Online Active Learning - Level Set > {eval_alpha})"
+    )
+else:
+    plt.ylabel("Subgrid RMSE")
+    plt.title("RMSE vs Total Samples (Online Active Learning)")
+
 plt.legend()
 plt.grid(True, linestyle="--", alpha=0.7)
 rmse_path = "plots/bo_active/bo_rmse_scaling.png"
 plt.savefig(rmse_path)
 print(f"Saved RMSE scaling plot to {rmse_path}")
 plt.show()
-
-print("Done!")
