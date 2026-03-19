@@ -7,7 +7,7 @@ from .field.abstract_field import AbstractField
 from .field.simple_field import SimpleField
 from .actor.abstract_actor import AbstractActor
 from .actor.grid_actor import GridActor
-from .rendering import Renderer, NavigationRenderer
+from .rendering import Renderer, NavigationRenderer, MultiSegmentRenderer
 from .utils.types import (
     GridConfig,
     GridPosition,
@@ -37,6 +37,7 @@ __all__ = [
     # Rendering
     'Renderer',
     'NavigationRenderer',
+    'MultiSegmentRenderer',
     # Types
     'GridConfig',
     'GridPosition',

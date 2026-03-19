@@ -217,3 +217,37 @@ class NavigationArenaState(GridArenaState):
     # Static task configuration (for visualization/analysis)
     target_position: GridPosition
     vicinity_radius: float
+
+
+@dataclass(frozen=True)
+class DynamicSGArenaState(GridArenaState):
+    """State for the Dynamic Start-Goal Arena.
+
+    Extends grid state with dual-level bookkeeping (segment and global)
+    for multi-segment simulation runs.
+
+    Segment-level (reset on each new segment):
+        segment_step_count: Steps taken in the current segment
+        segment_cumulative_reward: Reward accumulated in the current segment
+        target_reached: Whether the current target vicinity has been reached
+
+    Global-level (never reset except on full reset):
+        global_step_count: Total steps across all segments
+        global_cumulative_reward: Total reward across all segments
+
+    Task config (for visualization/analysis):
+        target_position: Current goal position
+        vicinity_radius: Radius defining "reached" region
+        segment_index: Zero-based index of the current segment
+    """
+    # Segment-level
+    segment_step_count: int
+    segment_cumulative_reward: float
+    target_reached: bool
+    # Global-level
+    global_step_count: int
+    global_cumulative_reward: float
+    # Task config
+    target_position: GridPosition
+    vicinity_radius: float
+    segment_index: int
