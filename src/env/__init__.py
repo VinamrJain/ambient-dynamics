@@ -1,7 +1,7 @@
 """Grid Environment"""
 
 from .environment import GridEnvironment
-from .arena import AbstractArena, GridArena, NavigationArena
+from .arena import AbstractArena, GridArena, NavigationArena, DynamicSGArena
 from .arena.reward import RewardFunction, NavigationReward
 from .field.abstract_field import AbstractField
 from .field.simple_field import SimpleField
@@ -15,6 +15,7 @@ from .utils.types import (
     ArenaState,
     GridArenaState,
     NavigationArenaState,
+    DynamicSGArenaState,
 )
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     'AbstractArena',
     'GridArena',
     'NavigationArena',
+    'DynamicSGArena',
     'RewardFunction',
     'NavigationReward',
     # Field
@@ -42,4 +44,5 @@ __all__ = [
     'ArenaState',
     'GridArenaState',
     'NavigationArenaState',
+    'DynamicSGArenaState',
 ]

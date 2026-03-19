@@ -14,6 +14,7 @@ from ..utils.types import GridPosition, GridConfig
 # Abstract base
 # ---------------------------------------------------------------------------
 
+
 class RewardFunction(ABC):
     """JAX-compatible vectorized reward function.
 
@@ -38,18 +39,18 @@ class RewardFunction(ABC):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _distance_to_target(position: GridPosition, target: GridPosition) -> float:
     """Euclidean distance from position to target (2D or 3D)."""
     if position.k is not None and target.k is not None:
-        return float(np.sqrt(
-            (position.i - target.i) ** 2
-            + (position.j - target.j) ** 2
-            + (position.k - target.k) ** 2
-        ))
-    return float(np.sqrt(
-        (position.i - target.i) ** 2
-        + (position.j - target.j) ** 2
-    ))
+        return float(
+            np.sqrt(
+                (position.i - target.i) ** 2
+                + (position.j - target.j) ** 2
+                + (position.k - target.k) ** 2
+            )
+        )
+    return float(np.sqrt((position.i - target.i) ** 2 + (position.j - target.j) ** 2))
 
 
 def _distance_grid_jax(grid_config: GridConfig, target: GridPosition) -> jnp.ndarray:
@@ -63,16 +64,56 @@ def _distance_grid_jax(grid_config: GridConfig, target: GridPosition) -> jnp.nda
     jj = jnp.arange(1, grid_config.n_y + 1, dtype=jnp.float32)
     kk = jnp.arange(1, grid_config.n_z + 1, dtype=jnp.float32)
     I, J, K = jnp.meshgrid(ii, jj, kk, indexing="ij")
-    return jnp.sqrt(
-        (I - target.i) ** 2
-        + (J - target.j) ** 2
-        + (K - target.k) ** 2
-    )
+    return jnp.sqrt((I - target.i) ** 2 + (J - target.j) ** 2 + (K - target.k) ** 2)
 
 
 # ---------------------------------------------------------------------------
 # Navigation reward (proximity + step cost)
 # ---------------------------------------------------------------------------
+
+
+class StepCostReward(RewardFunction):
+    """Simple step penalty reward.
+
+    r(D) = -step_cost everywhere except at the target where it is 0.
+    """
+
+    def __init__(
+        self,
+        target_position: GridPosition,
+        vicinity_radius: float,
+        step_cost: float = 1.0,
+    ) -> None:
+        self.target_position = target_position
+        self.vicinity_radius = vicinity_radius
+        self.step_cost = step_cost
+
+        if step_cost < 0.0:
+            raise ValueError("step_cost >= 0 required")
+
+    def set_target(
+        self, target: GridPosition, vicinity_radius: float | None = None
+    ) -> None:
+        """Update the target position (and optionally vicinity radius).
+
+        Both ``compute_scalar`` and ``compute_grid`` read
+        ``self.target_position`` on every call, so no cached state needs
+        invalidating.
+        """
+        self.target_position = target
+        if vicinity_radius is not None:
+            self.vicinity_radius = vicinity_radius
+
+    def compute_scalar(self, position: GridPosition) -> float:
+        dist = _distance_to_target(position, self.target_position)
+        if dist <= self.vicinity_radius:
+            return 0.0
+        return -self.step_cost
+
+    def compute_grid(self, grid_config: GridConfig) -> jnp.ndarray:
+        dist = _distance_grid_jax(grid_config, self.target_position)
+        return jnp.where(dist <= self.vicinity_radius, 0.0, -self.step_cost)
+
 
 class NavigationReward(RewardFunction):
     """Proximity reward: non-negative, step cost, inverse-linear in distance.
@@ -101,6 +142,19 @@ class NavigationReward(RewardFunction):
             )
         if step_cost < 0.0 or proximity_scale <= 0.0:
             raise ValueError("step_cost >= 0 and proximity_scale > 0 required")
+
+    def set_target(
+        self, target: GridPosition, vicinity_radius: float | None = None
+    ) -> None:
+        """Update the target position (and optionally vicinity radius).
+
+        Both ``compute_scalar`` and ``compute_grid`` read
+        ``self.target_position`` on every call, so no cached state needs
+        invalidating.
+        """
+        self.target_position = target
+        if vicinity_radius is not None:
+            self.vicinity_radius = vicinity_radius
 
     def compute_scalar(self, position: GridPosition) -> float:
         dist = _distance_to_target(position, self.target_position)
