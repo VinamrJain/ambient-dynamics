@@ -31,6 +31,7 @@ from src.env.actor.grid_actor import GridActor
 from src.env.arena.dynamic_sg_arena import DynamicSGArena
 from src.env.arena.reward import StepCostReward
 from src.env.utils.types import GridConfig, GridPosition
+from src.env.rendering.multi_segment_renderer import MultiSegmentRenderer
 from src.agents.ap_ssp_agent import APSSPAgent, APSSPAgentConfig
 
 config.update("jax_enable_x64", True)
@@ -184,14 +185,25 @@ def ei_acq(mu_flat, var_flat, y_train):
 # 3. Trajectory Loop Function
 # ===========================
 def run_trajectory_loops(
-    acq_type, max_total_samples=150, max_steps_per_loop=30, alpha=None
+    acq_type, max_total_samples=150, max_steps_per_loop=30, alpha=None, gif_path=None
 ):
     global key
     print(f"\n--- Running Strategy: {acq_type} ---")
 
-    # Reset
-    arena.set_position(initial_pos)
-    obs = arena.soft_reset()
+    # Optional renderer for trajectory GIF
+    renderer = None
+    if gif_path is not None:
+        renderer = MultiSegmentRenderer(
+            config=grid_config,
+            show_grid_points=True,
+            width=900,
+            height=900,
+            field=field,
+            show_field=True,
+        )
+
+    # Reset so each strategy / re-run starts at step 0 (no field re-sample)
+    obs = arena.reset_counters_and_position(initial_pos)
 
     X_obs = []
     y_obs = []
@@ -269,6 +281,10 @@ def run_trajectory_loops(
         agent.set_target(target_pos)
         obs = arena.soft_reset()
 
+        if renderer is not None:
+            renderer.new_segment()
+            renderer.step(arena.get_state())
+
         action = agent.begin_episode(obs)
         steps_this_loop = 0
         crashed = False
@@ -277,6 +293,9 @@ def run_trajectory_loops(
             obs = arena.step(action)
             reward = arena.compute_reward()
             state = arena.get_state()
+
+            if renderer is not None:
+                renderer.step(state)
 
             # Record observation
             key, noise_key = jr.split(key)
@@ -308,6 +327,11 @@ def run_trajectory_loops(
     mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=False, alpha=alpha)
     rmse_history.append((len(X_obs), rmse))
 
+    if renderer is not None and gif_path is not None:
+        os.makedirs(os.path.dirname(gif_path) or ".", exist_ok=True)
+        renderer.save_gif(gif_path, fps=10)
+        print(f"  -> Trajectory GIF saved to {gif_path}")
+
     print(f"Final | Samples: {len(X_obs)} | RMSE: {rmse:.4f}")
     return mu, var, X_tr, y_tr, rmse_history
 
@@ -323,12 +347,15 @@ results = {}
 strategies = ["random", "max_variance", "ei", "cost_aware_ei"]
 labels = ["Random Target", "Max Variance", "Expected Improvement (EI)", "Cost-Aware EI"]
 
+os.makedirs("plots/bo_active", exist_ok=True)
 for strat in strategies:
+    gif_path = f"plots/bo_active/trajectory_{strat}.gif"
     results[strat] = run_trajectory_loops(
         strat,
         max_total_samples=max_total_samples,
         max_steps_per_loop=max_steps_per_loop,
         alpha=eval_alpha,
+        gif_path=gif_path,
     )
 
 # %%
