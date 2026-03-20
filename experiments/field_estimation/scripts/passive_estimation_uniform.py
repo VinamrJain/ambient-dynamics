@@ -1,3 +1,19 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.1
+#   kernelspec:
+#     display_name: default
+#     language: python
+#     name: python3
+# ---
+
 # %%
 """Passive Field Estimation with Uniform Random Sampling."""
 
@@ -6,8 +22,16 @@ from pathlib import Path
 
 
 def add_project_root_to_path() -> Path:
-    """Add repository root to sys.path for direct script execution."""
-    project_root = Path(__file__).resolve().parents[3]
+    project_root = Path.cwd()
+    for _ in range(10):
+        if (project_root / "src").is_dir() and (project_root / "pixi.toml").exists():
+            break
+        parent = project_root.parent
+        if parent == project_root:
+            raise FileNotFoundError(
+                "Project root (directory with src/ and pixi.toml) not found."
+            )
+        project_root = parent
     root_str = str(project_root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
@@ -427,3 +451,183 @@ plt.title("RMSE Scaling vs. Sample Size")
 plt.legend()
 plt.grid(True, linestyle="--", alpha=0.7)
 plt.show()
+
+# %%
+# 8. Multi-field RMSE (mean / std over independent field seeds)
+# ==============================================================
+
+n_fields = 10
+base_seed_multi = (
+    1000  # base seed for field_idx -> jr.PRNGKey(base_seed_multi + field_idx)
+)
+M_multi = M  # number of uniform observations per field (edit freely)
+optimize_multi = True  # False: use true kernel hyperparameters (no Adam)
+adam_lr_multi = 0.05
+adam_iters_multi = 300
+
+x_coords_m = jnp.arange(1, grid_size + 1)
+y_coords_m = jnp.arange(1, grid_size + 1)
+Xm_m, Ym_m = jnp.meshgrid(x_coords_m, y_coords_m, indexing="ij")
+X_test_multi = jnp.column_stack([Xm_m.ravel(), Ym_m.ravel()]).astype(jnp.float64)
+
+
+def _extract_scalar(x):
+    # Accept scalar, 0d array, or size-1 array, else raise
+    arr = jnp.asarray(x)
+    if arr.ndim == 0:
+        return float(arr)
+    elif arr.shape == (1,):
+        return float(arr[0])
+    else:
+        raise ValueError(
+            f"Expected scalar or shape-(1,) array for hyperparameter, got shape {arr.shape}"
+        )
+
+
+def rmse_gp_on_field(
+    true_u_field: jnp.ndarray,
+    X_tr: jnp.ndarray,
+    y_tr: jnp.ndarray,
+    *,
+    optimize: bool,
+):
+    """Fit GP on (X_tr, y_tr), predict full grid, RMSE vs true_u_field.
+    Returns (rmse, variance, lengthscale, noise_std) if optimize, else only rmse."""
+    sub_ds = gpx.Dataset(X=X_tr, y=y_tr)
+    if optimize:
+        kernel = gpx.kernels.Matern52(variance=1.0, lengthscale=1.0)
+        prior = gpx.gps.Prior(mean_function=gpx.mean_functions.Zero(), kernel=kernel)
+        likelihood = gpx.likelihoods.Gaussian(
+            num_datapoints=sub_ds.n, obs_stddev=jnp.array([0.5])
+        )
+        posterior = prior * likelihood
+
+        def nmll_m(p, d):
+            return -gpx.objectives.conjugate_mll(p, d)
+
+        opt_posterior, state = gpx.fit(
+            model=posterior,
+            objective=nmll_m,
+            train_data=sub_ds,
+            optim=ox.adam(learning_rate=adam_lr_multi),
+            num_iters=adam_iters_multi,
+        )
+        latent_dist = opt_posterior.predict(X_test_multi, train_data=sub_ds)
+        # Extract learned kernel and noise hyperparameters as safe Python floats
+        learned_kernel = opt_posterior.prior.kernel
+        learned_variance = (
+            learned_kernel.variance if hasattr(learned_kernel, "variance") else None
+        )
+        learned_lengthscale = (
+            learned_kernel.lengthscale
+            if hasattr(learned_kernel, "lengthscale")
+            else None
+        )
+        learned_noise = (
+            opt_posterior.likelihood.obs_stddev
+            if hasattr(opt_posterior.likelihood, "obs_stddev")
+            else None
+        )
+        mu_pred = latent_dist.mean.reshape(grid_size, grid_size)
+        rmse = compute_field_rmse(true_u_field, mu_pred)
+        # Convert possibly shape-(1,) jax arrays to Python floats safely
+        learned_variance = (
+            _extract_scalar(learned_variance) if learned_variance is not None else None
+        )
+        learned_lengthscale = (
+            _extract_scalar(learned_lengthscale)
+            if learned_lengthscale is not None
+            else None
+        )
+        learned_noise = (
+            _extract_scalar(learned_noise) if learned_noise is not None else None
+        )
+        return (
+            rmse,
+            learned_variance,
+            learned_lengthscale,
+            learned_noise,
+        )
+    else:
+        kernel_true_m = gpx.kernels.Matern52(
+            variance=sigma_true**2, lengthscale=lengthscale_true
+        )
+        prior = gpx.gps.Prior(
+            mean_function=gpx.mean_functions.Zero(), kernel=kernel_true_m
+        )
+        likelihood = gpx.likelihoods.Gaussian(
+            num_datapoints=sub_ds.n, obs_stddev=jnp.array([noise_std_true])
+        )
+        posterior = prior * likelihood
+        latent_dist = posterior.predict(X_test_multi, train_data=sub_ds)
+        mu_pred = latent_dist.mean.reshape(grid_size, grid_size)
+        rmse = compute_field_rmse(true_u_field, mu_pred)
+        return rmse, sigma_true**2, lengthscale_true, noise_std_true
+
+
+print(
+    f"\n--- Multi-field RMSE ({n_fields} fields, M={M_multi}, optimize={optimize_multi}) ---"
+)
+
+rmses_multi = []
+variances_multi = []
+lengthscales_multi = []
+noises_multi = []
+
+for field_idx in range(n_fields):
+    seed_f = base_seed_multi + field_idx
+    key_f = jr.PRNGKey(seed_f)
+    key_f, field_key_f = jr.split(key_f)
+
+    grid_cfg_m = GridConfig.create(n_x=grid_size, n_y=grid_size)
+    field_m = RFFGPField(
+        config=grid_cfg_m,
+        d_max=4 * sigma_true,
+        sigma=sigma_true,
+        lengthscale=lengthscale_true,
+        nu=nu_true,
+        noise_std=noise_std_true,
+    )
+    field_m.reset(field_key_f)
+    true_u_f = field_m._precomputed_u.squeeze()
+
+    key_f, sk_i = jr.split(key_f)
+    i_idx_m = jr.randint(sk_i, (M_multi,), 1, grid_size + 1)
+    key_f, sk_j = jr.split(key_f)
+    j_idx_m = jr.randint(sk_j, (M_multi,), 1, grid_size + 1)
+    X_tr_m = jnp.column_stack([i_idx_m, j_idx_m]).astype(jnp.float64)
+
+    y_tr_m = jnp.zeros((M_multi, 1))
+    key_f, nk_m = jr.split(key_f)
+    noise_keys_m = jr.split(nk_m, M_multi)
+    for idx_m in range(M_multi):
+        pos_m = GridPosition(int(X_tr_m[idx_m, 0]), int(X_tr_m[idx_m, 1]))
+        disp_m = field_m.sample_displacement(pos_m, noise_keys_m[idx_m])
+        y_tr_m = y_tr_m.at[idx_m, 0].set(disp_m.u)
+
+    result = rmse_gp_on_field(true_u_f, X_tr_m, y_tr_m, optimize=optimize_multi)
+    r_m, v_m, l_m, n_m = result
+    rmses_multi.append(r_m)
+    variances_multi.append(v_m)
+    lengthscales_multi.append(l_m)
+    noises_multi.append(n_m)
+    print(
+        f"  field seed {seed_f}: RMSE = {r_m:.4f} | Sigma^2={v_m:.2f}, L={l_m:.2f}, Noise={n_m:.2f}"
+    )
+
+rmse_arr_m = jnp.asarray(rmses_multi)
+var_arr_m = jnp.asarray(variances_multi)
+len_arr_m = jnp.asarray(lengthscales_multi)
+noise_arr_m = jnp.asarray(noises_multi)
+
+print(
+    f"\nAggregate: RMSE mean = {float(jnp.mean(rmse_arr_m)):.4f}, "
+    f"std = {float(jnp.std(rmse_arr_m)):.4f}"
+)
+
+print(
+    f"Optimized Hyperparameters (mean ± std over {n_fields} fields):\n"
+    f"  Sigma^2: {float(jnp.mean(var_arr_m)):.3f} ± {float(jnp.std(var_arr_m)):.3f}\n"
+    f"  Lengthscale: {float(jnp.mean(len_arr_m)):.3f} ± {float(jnp.std(len_arr_m)):.3f}\n"
+    f"  Noise: {float(jnp.mean(noise_arr_m)):.4f} ± {float(jnp.std(noise_arr_m)):.4f}"
+)

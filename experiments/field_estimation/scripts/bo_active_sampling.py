@@ -1,6 +1,19 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.1
+# ---
+
 # %%
 """Bayesian Optimization Active Sampling with AP-SSP Planning."""
-
+# %load_ext autoreload
+# %autoreload 2
 import jax
 from jax import config
 import jax.numpy as jnp
@@ -17,12 +30,18 @@ from pathlib import Path
 
 
 def add_project_root_to_path() -> Path:
-    project_root = Path(__file__).resolve().parents[3]
+    project_root = Path.cwd()
+    for _ in range(10):
+        if (project_root / "src").is_dir() and (project_root / "pixi.toml").exists():
+            break
+        parent = project_root.parent
+        if parent == project_root:
+            raise FileNotFoundError("Project root (directory with src/ and pixi.toml) not found.")
+        project_root = parent
     root_str = str(project_root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
     return project_root
-
 
 add_project_root_to_path()
 
@@ -94,7 +113,7 @@ arena.reset(reset_key)
 
 # Plan AP-SSP
 print(f"Planning AP-SSP for all state-goal pairs ({grid_size}x{grid_size}) ...")
-agent = APSSPAgent(APSSPAgentConfig(max_iters=500, tol=1e-3))
+agent = APSSPAgent(APSSPAgentConfig(max_iters=200, tol=1e-3))
 agent.plan(arena)
 print("Planning complete!")
 
@@ -203,7 +222,23 @@ def run_trajectory_loops(
         )
 
     # Reset so each strategy / re-run starts at step 0 (no field re-sample)
-    obs = arena.reset_counters_and_position(initial_pos)
+    try:
+        obs = arena.reset_counters_and_position(initial_pos)
+    except AttributeError:
+        # Arena was created before reset_counters_and_position existed; reset inline
+        arena.set_position(initial_pos)
+        arena.last_position = arena.position
+        arena.step_count = 0
+        arena._segment_step_count = 0
+        arena._segment_cumulative_reward = 0.0
+        arena._target_reached = False
+        arena._segment_index = 0
+        arena._global_step_count = 0
+        arena._global_cumulative_reward = 0.0
+        arena._last_action = None
+        arena._last_reward = 0.0
+        arena.last_displacement = arena._zero_displacement()
+        obs = arena._get_observation()
 
     X_obs = []
     y_obs = []
@@ -329,8 +364,9 @@ def run_trajectory_loops(
 
     if renderer is not None and gif_path is not None:
         os.makedirs(os.path.dirname(gif_path) or ".", exist_ok=True)
-        renderer.save_gif(gif_path, fps=10)
+        renderer.save_gif(gif_path, fps=5)
         print(f"  -> Trajectory GIF saved to {gif_path}")
+        renderer.reset()
 
     print(f"Final | Samples: {len(X_obs)} | RMSE: {rmse:.4f}")
     return mu, var, X_tr, y_tr, rmse_history

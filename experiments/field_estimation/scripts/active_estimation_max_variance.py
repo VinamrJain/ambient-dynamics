@@ -1,3 +1,15 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.1
+# ---
+
 # %%
 """Active Field Estimation with Max Variance Sampling vs Uniform Random."""
 
@@ -6,8 +18,24 @@ from pathlib import Path
 
 
 def add_project_root_to_path() -> Path:
-    """Add repository root to sys.path for direct script execution."""
-    project_root = Path(__file__).resolve().parents[3]
+    """Add repository root to sys.path. Works for both scripts and Jupyter notebooks."""
+    if getattr(sys.modules.get("__main__", None), "__file__", None):
+        # Script: project root is 3 levels up from experiments/field_estimation/scripts/*.py
+        project_root = Path(sys.modules["__main__"].__file__).resolve().parents[3]
+    else:
+        # Notebook: walk up from cwd until we find project root (has src/ and pixi.toml)
+        project_root = Path.cwd()
+        for _ in range(10):
+            if (project_root / "src").is_dir() and (
+                project_root / "pixi.toml"
+            ).exists():
+                break
+            parent = project_root.parent
+            if parent == project_root:
+                raise FileNotFoundError(
+                    "Project root (directory with src/ and pixi.toml) not found."
+                )
+            project_root = parent
     root_str = str(project_root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
@@ -16,8 +44,8 @@ def add_project_root_to_path() -> Path:
 
 add_project_root_to_path()
 
-import jax
 from jax import config
+
 
 config.update("jax_enable_x64", True)
 
@@ -29,7 +57,6 @@ import optax as ox
 
 from src.env.field.rff_gp_field import RFFGPField
 from src.env.utils.types import GridConfig, GridPosition
-from experiments.field_estimation.utils.evaluation import compute_field_rmse
 
 # %%
 # 1. Setup True Field
@@ -64,6 +91,7 @@ Xm, Ym = jnp.meshgrid(x_coords, y_coords, indexing="ij")
 X_test = jnp.column_stack([Xm.ravel(), Ym.ravel()]).astype(jnp.float64)
 
 M = 500
+random_eval_interval = 50  # Evaluate random baseline RMSE every N samples
 var_init = sigma_true**2
 lengthscale_init = lengthscale_true
 
@@ -117,64 +145,89 @@ def evaluate_gp(X_tr, y_tr, var_init=1.0, lengthscale_init=1.0, optimize=False):
 
 
 # %%
-# 3. Collect Uniform Random Observations
-# ======================================
-key, sample_key = jr.split(key)
-
-print(f"Collecting {M} Uniform Random samples...")
-i_idx_rand = jr.randint(sample_key, (M,), 1, grid_size + 1)
-sample_key, _ = jr.split(sample_key)
-j_idx_rand = jr.randint(sample_key, (M,), 1, grid_size + 1)
-
-X_train_rand = jnp.column_stack([i_idx_rand, j_idx_rand]).astype(jnp.float64)
-y_train_rand = jnp.zeros((M, 1))
-
-key, noise_key = jr.split(key)
-noise_keys_rand = jr.split(noise_key, M)
-
-for idx in range(M):
-    pos = GridPosition(int(X_train_rand[idx, 0]), int(X_train_rand[idx, 1]))
-    disp = field.sample_displacement(pos, noise_keys_rand[idx])
-    y_train_rand = y_train_rand.at[idx, 0].set(disp.u)
-
-# %%
-# 4. Collect Active Observations (Max Variance)
-# =============================================
-b = 1  # Batch size
+# 3. Shared Initial Samples
+# =========================
+b = 1  # Batch size for active learning
 initial_samples = 50
 
-X_train_act_list = []
-y_train_act_list = []
 key, sample_key = jr.split(key)
-
-# 4.1 Initial Random Sample
-i_idx_act = jr.randint(sample_key, (initial_samples,), 1, grid_size + 1)
+i_idx_init = jr.randint(sample_key, (initial_samples,), 1, grid_size + 1)
 sample_key, _ = jr.split(sample_key)
-j_idx_act = jr.randint(sample_key, (initial_samples,), 1, grid_size + 1)
-X_init_act = jnp.column_stack([i_idx_act, j_idx_act]).astype(jnp.float64)
+j_idx_init = jr.randint(sample_key, (initial_samples,), 1, grid_size + 1)
+X_init = jnp.column_stack([i_idx_init, j_idx_init]).astype(jnp.float64)
 
+y_init_list = []
 for idx in range(initial_samples):
     key, noise_key = jr.split(key)
-    pos = GridPosition(int(X_init_act[idx, 0]), int(X_init_act[idx, 1]))
+    pos = GridPosition(int(X_init[idx, 0]), int(X_init[idx, 1]))
     disp = field.sample_displacement(pos, noise_key)
-    X_train_act_list.append(X_init_act[idx])
-    y_train_act_list.append(jnp.array([disp.u]))
+    y_init_list.append(jnp.array([disp.u]))
+y_init = jnp.array(y_init_list)
 
-X_train_act = jnp.array(X_train_act_list)
-y_train_act = jnp.array(y_train_act_list)
+# Evaluate shared starting point
+mu_init, var_init_gp, rmse_init, _ = evaluate_gp(
+    X_init, y_init, var_init, lengthscale_init, optimize=False
+)
+print(f"Shared initial {initial_samples} samples | RMSE = {rmse_init:.4f}")
 
-active_rmse_history = []
-active_sample_counts = []
+# %%
+# 4. Uniform Random Branch (continues from shared initial samples)
+# ================================================================
+remaining = M - initial_samples
+key, sample_key = jr.split(key)
+
+print(f"\nCollecting {remaining} additional Uniform Random samples...")
+i_idx_extra = jr.randint(sample_key, (remaining,), 1, grid_size + 1)
+sample_key, _ = jr.split(sample_key)
+j_idx_extra = jr.randint(sample_key, (remaining,), 1, grid_size + 1)
+X_extra_rand = jnp.column_stack([i_idx_extra, j_idx_extra]).astype(jnp.float64)
+
+X_train_rand = jnp.concatenate([X_init, X_extra_rand], axis=0)
+y_train_rand = jnp.concatenate([y_init, jnp.zeros((remaining, 1))], axis=0)
+
+key, noise_key = jr.split(key)
+noise_keys_rand = jr.split(noise_key, remaining)
+
+for idx in range(remaining):
+    pos = GridPosition(int(X_extra_rand[idx, 0]), int(X_extra_rand[idx, 1]))
+    disp = field.sample_displacement(pos, noise_keys_rand[idx])
+    y_train_rand = y_train_rand.at[initial_samples + idx, 0].set(disp.u)
+
+# Evaluate random baseline RMSE at regular intervals (including shared start)
+random_rmse_history = [rmse_init]
+random_sample_counts = [initial_samples]
+eval_points = list(range(
+    initial_samples + random_eval_interval, M + 1, random_eval_interval
+))
+if not eval_points or eval_points[-1] != M:
+    eval_points.append(M)
+
+print(f"Evaluating random baseline at {len(eval_points)} checkpoints...")
+for n in eval_points:
+    _, _, rmse_n, _ = evaluate_gp(
+        X_train_rand[:n], y_train_rand[:n], var_init, lengthscale_init, optimize=False
+    )
+    random_rmse_history.append(rmse_n)
+    random_sample_counts.append(n)
+    print(f"  Random N={n:<3} | RMSE = {rmse_n:.4f}")
+
+# %%
+# 5. Active Branch — Max Variance (continues from shared initial samples)
+# =======================================================================
+X_train_act_list = list(X_init)
+y_train_act_list = list(y_init)
+
+X_train_act = X_init.copy()
+y_train_act = y_init.copy()
+
+active_rmse_history = [rmse_init]
+active_sample_counts = [initial_samples]
+
+# Start from the shared GP state
+var_act = var_init_gp
 
 print(f"\nStarting active learning... (Target M={M}, batch size={b})")
-
-# Evaluate Initial
-mu_act, var_act, rmse_act, _ = evaluate_gp(
-    X_train_act, y_train_act, var_init, lengthscale_init, optimize=False
-)
-active_rmse_history.append(rmse_act)
-active_sample_counts.append(len(X_train_act))
-print(f"Collected {len(X_train_act):<3}/{M} samples | RMSE = {rmse_act:.4f}")
+print(f"Collected {initial_samples:<3}/{M} samples | RMSE = {rmse_init:.4f}")
 
 while len(X_train_act) < M:
     # Select top b locations with max variance
@@ -201,7 +254,7 @@ while len(X_train_act) < M:
     print(f"Collected {len(X_train_act):<3}/{M} samples | RMSE = {rmse_act:.4f}")
 
 # %%
-# 5. Final Evaluation (True Parameters)
+# 6. Final Evaluation (True Parameters)
 # =====================================
 print("\nEvaluating Final Random Dataset...")
 mu_rand, var_rand, rmse_rand, _ = evaluate_gp(
@@ -214,7 +267,7 @@ mu_act_final, var_act_final, rmse_act_final, _ = evaluate_gp(
 )
 
 # %%
-# 6. Plotting
+# 7. Plotting
 # ===========
 
 # Figure 1: True Field & Sample Heatmaps (1x3)
@@ -229,11 +282,12 @@ im0 = axes1[0].imshow(
 axes1[0].set_title("True Field")
 plt.colorbar(im0, ax=axes1[0])
 
-axes1[1].scatter(
-    X_train_rand[:, 0],
-    X_train_rand[:, 1],
-    c=y_train_rand[:, 0],
-    cmap="viridis",
+sample_order_rand = jnp.arange(len(X_train_rand[initial_samples:]))
+sc1 = axes1[1].scatter(
+    X_train_rand[initial_samples:, 0],
+    X_train_rand[initial_samples:, 1],
+    c=sample_order_rand,
+    cmap="magma",
     edgecolors="k",
     s=30,
 )
@@ -241,12 +295,14 @@ axes1[1].set_xlim(0.5, grid_size + 0.5)
 axes1[1].set_ylim(0.5, grid_size + 0.5)
 axes1[1].set_title(f"Uniform Random Samples (N={M})")
 axes1[1].set_aspect("equal")
+plt.colorbar(sc1, ax=axes1[1], label="Sample Order")
 
-axes1[2].scatter(
-    X_train_act[:, 0],
-    X_train_act[:, 1],
-    c=y_train_act[:, 0],
-    cmap="viridis",
+sample_order_act = jnp.arange(len(X_train_act[initial_samples:]))
+sc2 = axes1[2].scatter(
+    X_train_act[initial_samples:, 0],
+    X_train_act[initial_samples:, 1],
+    c=sample_order_act,
+    cmap="magma",
     edgecolors="k",
     s=30,
 )
@@ -254,6 +310,7 @@ axes1[2].set_xlim(0.5, grid_size + 0.5)
 axes1[2].set_ylim(0.5, grid_size + 0.5)
 axes1[2].set_title(f"Active Samples (N={M})")
 axes1[2].set_aspect("equal")
+plt.colorbar(sc2, ax=axes1[2], label="Sample Order")
 
 plt.tight_layout()
 plt.savefig("plots/active_estimation/active_estimation_sample_heatmaps.png")
@@ -325,7 +382,7 @@ plt.tight_layout()
 plt.savefig("plots/active_estimation/active_estimation_gp_posteriors.png")
 plt.show()
 
-# Figure 3: RMSE Scaling during Active Collection
+# Figure 3: RMSE Scaling — Active vs Uniform Random
 plt.figure(figsize=(8, 5))
 plt.plot(
     active_sample_counts,
@@ -335,20 +392,102 @@ plt.plot(
     color="r",
     label="Active Sampling",
 )
-# Also plot the final Random RMSE as a reference point
-plt.scatter(
-    [M],
-    [rmse_rand],
-    color="b",
+plt.plot(
+    random_sample_counts,
+    random_rmse_history,
     marker="s",
-    s=100,
-    zorder=5,
-    label="Uniform Random Final",
+    linestyle="--",
+    color="b",
+    label=f"Uniform Random (every {random_eval_interval})",
 )
 plt.xlabel("Number of Samples")
 plt.ylabel("RMSE")
-plt.title("Active Sampling RMSE Scaling vs. Sample Size")
+plt.title("RMSE Scaling: Active vs Uniform Random Sampling")
 plt.grid(True, linestyle="--", alpha=0.7)
 plt.legend()
 plt.savefig("plots/active_estimation/active_estimation_rmse_scaling.png")
 plt.show()
+
+# %%
+# Figure 4: Pre-compute error heatmaps for animation
+# (Separate from plotting so the animation cell can be re-run cheaply)
+gif_frame_step = 5  # Evaluate GP every N samples for animation frames
+
+n_total = len(X_train_act)
+frame_counts = list(range(initial_samples, n_total + 1, gif_frame_step))
+if frame_counts[-1] != n_total:
+    frame_counts.append(n_total)
+
+error_frames = []
+print(f"Pre-computing {len(frame_counts)} error heatmap frames...")
+for i, n in enumerate(frame_counts):
+    mu_n, _, _, _ = evaluate_gp(
+        X_train_act[:n], y_train_act[:n], var_init, lengthscale_init, optimize=False
+    )
+    err_n = jnp.abs(true_u - mu_n)
+    error_frames.append(err_n)
+    if (i + 1) % 20 == 0 or n == n_total:
+        print(f"  Frame {i + 1}/{len(frame_counts)} (N={n})")
+
+print("Done pre-computing frames.")
+
+# %%
+# Figure 4: Animated GIF — Error heatmap + active sample progression
+from matplotlib.animation import FuncAnimation, PillowWriter
+
+gif_fps = 10
+
+fig_gif, ax_gif = plt.subplots(figsize=(7, 7))
+extent = [0.5, grid_size + 0.5, 0.5, grid_size + 0.5]
+
+# Determine shared color scale across all frames
+vmax_err = max(float(e.max()) for e in error_frames)
+
+# Initial heatmap
+im = ax_gif.imshow(
+    error_frames[0].T,
+    origin="lower",
+    cmap="Reds",
+    extent=extent,
+    vmin=0,
+    vmax=vmax_err,
+)
+plt.colorbar(im, ax=ax_gif, label="Absolute Error")
+
+# Sample scatter — coloured by order
+sample_cmap = plt.cm.magma
+sample_norm = plt.Normalize(vmin=0, vmax=n_total - 1)
+scat = ax_gif.scatter([], [], s=20, edgecolors="k", linewidths=0.3)
+
+sm = plt.cm.ScalarMappable(cmap=sample_cmap, norm=sample_norm)
+sm.set_array([])
+plt.colorbar(sm, ax=ax_gif, label="Sample Order")
+
+ax_gif.set_xlim(extent[0], extent[1])
+ax_gif.set_ylim(extent[2], extent[3])
+ax_gif.set_aspect("equal")
+title = ax_gif.set_title("")
+
+
+def update(frame_idx):
+    n = frame_counts[frame_idx]
+    # Update error heatmap
+    im.set_data(error_frames[frame_idx].T)
+    # Update sample scatter
+    xs = X_train_act[:n, 0]
+    ys = X_train_act[:n, 1]
+    scat.set_offsets(jnp.column_stack([xs, ys]))
+    scat.set_facecolors(sample_cmap(sample_norm(jnp.arange(n))))
+    title.set_text(f"Active Sampling: {n}/{n_total} samples")
+    return im, scat, title
+
+
+anim = FuncAnimation(
+    fig_gif, update, frames=len(frame_counts), blit=True, repeat=False
+)
+anim.save(
+    "plots/active_estimation/active_estimation_error_evolution.gif",
+    writer=PillowWriter(fps=gif_fps),
+)
+plt.show()
+print("Saved active_estimation_error_evolution.gif")
