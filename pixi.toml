@@ -7,9 +7,7 @@ version = "0.1.0"
 [tasks]
 register-kernel = "python -m ipykernel install --user --name=ambient-$PIXI_ENVIRONMENT_NAME --display-name=\"ambient-$PIXI_ENVIRONMENT_NAME\""
 test = "pytest tests/ -v"
-test_field = "pytest tests/test_field/ -v"
-test_arena = "pytest tests/test_arena/ -v"
-test_agents = "pytest tests/test_agents/ -v"
+jupytext-sync = { cmd = "grep -rl 'formats: ipynb,py:percent' --include='*.py' . | xargs jupytext --sync", description = "Sync all jupytext-paired .py/.ipynb files" }
 
 [dependencies]
 python = ">=3.11"
