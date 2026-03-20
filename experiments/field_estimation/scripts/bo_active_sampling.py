@@ -8,6 +8,10 @@
 #       format_name: percent
 #       format_version: '1.3'
 #       jupytext_version: 1.19.1
+#   kernelspec:
+#     display_name: default
+#     language: python
+#     name: python3
 # ---
 
 # %%
@@ -81,9 +85,6 @@ field = RFFGPField(
     nu=nu_true,
     noise_std=noise_std_true,
 )
-field.reset(field_key)
-true_u = field._precomputed_u.squeeze()
-
 # Build Actor & Arena
 actor = GridActor(noise_std=0.0)
 vicinity_radius = 0.0
@@ -110,13 +111,18 @@ arena = DynamicSGArena(
 
 key, reset_key = jr.split(key)
 arena.reset(reset_key)
+true_u = field._precomputed_u.squeeze()
+true_u_subgrid = true_u[margin:-margin, margin:-margin]
+assert jnp.array_equal(true_u, field._precomputed_u.squeeze()), "Field was re-sampled unexpectedly!"
 
+# %%
 # Plan AP-SSP
 print(f"Planning AP-SSP for all state-goal pairs ({grid_size}x{grid_size}) ...")
-agent = APSSPAgent(APSSPAgentConfig(max_iters=200, tol=1e-3))
+agent = APSSPAgent(APSSPAgentConfig(max_iters=500, tol=1e-3))
 agent.plan(arena)
 print("Planning complete!")
 
+# %%
 # Setup Full GP Test Grid for predictions
 x_coords_full = jnp.arange(1, grid_size + 1)
 y_coords_full = jnp.arange(1, grid_size + 1)
@@ -129,26 +135,49 @@ y_coords_sub = jnp.arange(margin + 1, grid_size - margin + 1)
 Xm_sub, Ym_sub = jnp.meshgrid(x_coords_sub, y_coords_sub, indexing="ij")
 X_test_sub = jnp.column_stack([Xm_sub.ravel(), Ym_sub.ravel()]).astype(jnp.float64)
 
-true_u_subgrid = true_u[margin:-margin, margin:-margin]
-
-var_init = 1.0
-lengthscale_init = 1.0
+var_init = sigma_true**2
+lengthscale_init = lengthscale_true
 
 
 # %%
 # 2. General Evaluation and Acquisition Functions
 # ===============================================
-def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None):
-    dataset = gpx.Dataset(X=X_tr, y=y_tr)
+def deduplicate_observations(X_obs_list, y_obs_list):
+    """Average observations at the same (i,j) cell to reduce redundancy."""
+    from collections import defaultdict
 
+    cell_obs = defaultdict(list)
+    for xy, y_val in zip(X_obs_list, y_obs_list):
+        cell_obs[(xy[0], xy[1])].append(y_val[0])
+    X_dedup, y_dedup = [], []
+    for (i, j), vals in cell_obs.items():
+        X_dedup.append([i, j])
+        y_dedup.append([float(jnp.mean(jnp.array(vals)))])
+    return X_dedup, y_dedup
+
+
+def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None, init_params=None):
+    """Fit GP and return predictions, RMSE, and learned params for warm-starting."""
+    # Deduplicate observations at same grid cell
+    X_dedup, y_dedup = deduplicate_observations(X_tr.tolist(), y_tr.tolist())
+    dataset = gpx.Dataset(
+        X=jnp.array(X_dedup, dtype=jnp.float64),
+        y=jnp.array(y_dedup, dtype=jnp.float64),
+    )
+
+    # Use warm-started params if available, otherwise use initial values
+    v_init = init_params["variance"] if init_params else var_init
+    l_init = init_params["lengthscale"] if init_params else lengthscale_init
+
+    kernel = gpx.kernels.Matern52(variance=v_init, lengthscale=l_init)
+    prior = gpx.gps.Prior(mean_function=gpx.mean_functions.Zero(), kernel=kernel)
+    likelihood = gpx.likelihoods.Gaussian(
+        num_datapoints=dataset.n, obs_stddev=jnp.array([noise_std_true])
+    )
+    posterior = prior * likelihood
+
+    learned_params = None
     if optimize:
-        kernel = gpx.kernels.Matern52(variance=var_init, lengthscale=lengthscale_init)
-        prior = gpx.gps.Prior(mean_function=gpx.mean_functions.Zero(), kernel=kernel)
-        likelihood = gpx.likelihoods.Gaussian(
-            num_datapoints=dataset.n, obs_stddev=jnp.array([0.5])
-        )
-        posterior = prior * likelihood
-
         def nmll(p, d):
             return -gpx.objectives.conjugate_mll(p, d)
 
@@ -158,45 +187,52 @@ def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None):
             objective=nmll,
             train_data=dataset,
             optim=optim,
-            num_iters=100,
+            num_iters=300,
         )
         latent_dist = opt_posterior.predict(X_test_full, train_data=dataset)
+        learned_params = {
+            "variance": opt_posterior.prior.kernel.variance,
+            "lengthscale": opt_posterior.prior.kernel.lengthscale,
+        }
     else:
-        kernel = gpx.kernels.Matern52(variance=var_init, lengthscale=lengthscale_init)
-        prior = gpx.gps.Prior(mean_function=gpx.mean_functions.Zero(), kernel=kernel)
-        likelihood = gpx.likelihoods.Gaussian(
-            num_datapoints=dataset.n, obs_stddev=jnp.array([noise_std_true])
-        )
-        posterior = prior * likelihood
         latent_dist = posterior.predict(X_test_full, train_data=dataset)
 
     mu_full = latent_dist.mean.reshape(grid_size, grid_size)
     var_full = latent_dist.variance.reshape(grid_size, grid_size)
 
-    # Calculate RMSE on subgrid
+    # Calculate RMSE values
     mu_subgrid = mu_full[margin:-margin, margin:-margin]
-    true_u_flat = true_u_subgrid.ravel()
-    mu_flat = mu_subgrid.ravel()
+    true_u_flat_full = true_u.ravel()
+    mu_flat_full = mu_full.ravel()
+    true_u_flat_sub = true_u_subgrid.ravel()
+    mu_flat_sub = mu_subgrid.ravel()
+
+    rmse_dict = {
+        "rmse_full_grid": float(jnp.sqrt(jnp.mean((true_u_flat_full - mu_flat_full) ** 2))),
+        "rmse_subgrid": float(jnp.sqrt(jnp.mean((true_u_flat_sub - mu_flat_sub) ** 2))),
+    }
 
     if alpha is not None:
-        mask = jnp.abs(true_u_flat) > alpha
+        mask = jnp.abs(true_u_flat_sub) > alpha
         if jnp.sum(mask) == 0:
-            rmse_val = 0.0
+            rmse_dict["rmse_subgrid_levelset"] = 0.0
+            print("No points in level set")
         else:
-            rmse_val = jnp.sqrt(jnp.mean((true_u_flat[mask] - mu_flat[mask]) ** 2))
-    else:
-        rmse_val = jnp.sqrt(jnp.mean((true_u_flat - mu_flat) ** 2))
+            rmse_dict["rmse_subgrid_levelset"] = float(
+                jnp.sqrt(jnp.mean((true_u_flat_sub[mask] - mu_flat_sub[mask]) ** 2))
+            )
 
-    return mu_full, var_full, float(rmse_val)
+    return mu_full, var_full, rmse_dict, learned_params
 
 
 def ei_acq(mu_flat, var_flat, y_train):
-    f_best = jnp.max(y_train)
+    f_best = jnp.max(jnp.abs(y_train))
+    abs_mu = jnp.abs(mu_flat)
     sigma = jnp.sqrt(jnp.maximum(var_flat, 1e-9))
-    z = (mu_flat - f_best) / sigma
+    z = (abs_mu - f_best) / sigma
     phi = jax.scipy.stats.norm.pdf(z)
     Phi = jax.scipy.stats.norm.cdf(z)
-    ei = (mu_flat - f_best) * Phi + sigma * phi
+    ei = (abs_mu - f_best) * Phi + sigma * phi
     return jnp.where(sigma > 1e-6, ei, 0.0)
 
 
@@ -204,9 +240,9 @@ def ei_acq(mu_flat, var_flat, y_train):
 # 3. Trajectory Loop Function
 # ===========================
 def run_trajectory_loops(
-    acq_type, max_total_samples=150, max_steps_per_loop=30, alpha=None, gif_path=None
+    acq_type, strategy_key, max_total_samples=150, max_steps_per_loop=30, alpha=None, gif_path=None, optimize=True
 ):
-    global key
+    key = strategy_key
     print(f"\n--- Running Strategy: {acq_type} ---")
 
     # Optional renderer for trajectory GIF
@@ -222,23 +258,7 @@ def run_trajectory_loops(
         )
 
     # Reset so each strategy / re-run starts at step 0 (no field re-sample)
-    try:
-        obs = arena.reset_counters_and_position(initial_pos)
-    except AttributeError:
-        # Arena was created before reset_counters_and_position existed; reset inline
-        arena.set_position(initial_pos)
-        arena.last_position = arena.position
-        arena.step_count = 0
-        arena._segment_step_count = 0
-        arena._segment_cumulative_reward = 0.0
-        arena._target_reached = False
-        arena._segment_index = 0
-        arena._global_step_count = 0
-        arena._global_cumulative_reward = 0.0
-        arena._last_action = None
-        arena._last_reward = 0.0
-        arena.last_displacement = arena._zero_displacement()
-        obs = arena._get_observation()
+    obs = arena.reset_counters_and_position(initial_pos)
 
     X_obs = []
     y_obs = []
@@ -251,15 +271,20 @@ def run_trajectory_loops(
 
     rmse_history = []
     loop_idx = 1
+    gp_params = None  # warm-start params
+    targets_attempted = 0
+    targets_reached = 0
 
     while len(X_obs) < max_total_samples:
         X_tr = jnp.array(X_obs, dtype=jnp.float64)
         y_tr = jnp.array(y_obs, dtype=jnp.float64)
 
-        mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=True, alpha=alpha)
-        rmse_history.append((len(X_obs), rmse))
+        mu, var, rmse_dict, gp_params = evaluate_gp(
+            X_tr, y_tr, optimize=optimize, alpha=alpha, init_params=gp_params
+        )
+        rmse_history.append((len(X_obs), rmse_dict))
         print(
-            f"Loop {loop_idx} | Samples: {len(X_obs)}/{max_total_samples} | RMSE: {rmse:.4f}"
+            f"Loop {loop_idx} | Samples: {len(X_obs)}/{max_total_samples} | RMSE(sub): {rmse_dict['rmse_subgrid_levelset']:.4f}"
         )
 
         # Extract subgrid predictions for targeting
@@ -308,6 +333,7 @@ def run_trajectory_loops(
 
         target_coords = X_test_sub[best_idx]
         target_pos = GridPosition(int(target_coords[0]), int(target_coords[1]))
+        targets_attempted += 1
 
         print(f"  -> Target: {target_pos} from {arena.position}")
 
@@ -340,6 +366,7 @@ def run_trajectory_loops(
             steps_this_loop += 1
 
             if state.target_reached:
+                targets_reached += 1
                 print(f"  -> Reached in {steps_this_loop} steps.")
                 break
             if arena.is_terminal():
@@ -359,8 +386,10 @@ def run_trajectory_loops(
     # Final eval
     X_tr = jnp.array(X_obs, dtype=jnp.float64)
     y_tr = jnp.array(y_obs, dtype=jnp.float64)
-    mu, var, rmse = evaluate_gp(X_tr, y_tr, optimize=False, alpha=alpha)
-    rmse_history.append((len(X_obs), rmse))
+    mu, var, rmse_dict, gp_params = evaluate_gp(
+        X_tr, y_tr, optimize=optimize, alpha=alpha, init_params=gp_params
+    )
+    rmse_history.append((len(X_obs), rmse_dict))
 
     if renderer is not None and gif_path is not None:
         os.makedirs(os.path.dirname(gif_path) or ".", exist_ok=True)
@@ -368,15 +397,18 @@ def run_trajectory_loops(
         print(f"  -> Trajectory GIF saved to {gif_path}")
         renderer.reset()
 
-    print(f"Final | Samples: {len(X_obs)} | RMSE: {rmse:.4f}")
-    return mu, var, X_tr, y_tr, rmse_history
+    print(
+        f"Final | Samples: {len(X_obs)} | Reach: {targets_reached}/{targets_attempted}"
+        f" | RMSE(subgrid): {rmse_dict['rmse_subgrid']:.4f}"
+    )
+    return mu, var, X_tr, y_tr, rmse_history, (targets_reached, targets_attempted)
 
 
 # %%
 # 4. Run Experiments
 # ==================
-max_total_samples = 100
-max_steps_per_loop = 20
+max_total_samples = 150
+max_steps_per_loop = 30
 eval_alpha = 2.0  # Set to a threshold to estimate level sets, or None for whole subgrid
 
 results = {}
@@ -384,14 +416,32 @@ strategies = ["random", "max_variance", "ei", "cost_aware_ei"]
 labels = ["Random Target", "Max Variance", "Expected Improvement (EI)", "Cost-Aware EI"]
 
 os.makedirs("plots/bo_active", exist_ok=True)
-for strat in strategies:
+for idx, strat in enumerate(strategies):
+    strategy_key = jr.fold_in(jr.PRNGKey(seed), idx)
     gif_path = f"plots/bo_active/trajectory_{strat}.gif"
     results[strat] = run_trajectory_loops(
         strat,
+        strategy_key=strategy_key,
         max_total_samples=max_total_samples,
         max_steps_per_loop=max_steps_per_loop,
         alpha=eval_alpha,
-        gif_path=gif_path,
+        gif_path=None,
+        optimize=True
+    )
+
+# Print comparison table
+print("\n=== Strategy Comparison ===")
+print(f"{'Strategy':<30} {'Samples':>8} {'Reach':>12} {'RMSE(grid)':>12} {'RMSE(sub)':>12} {'RMSE(lvl)':>12}")
+print("-" * 92)
+for strat, label in zip(strategies, labels):
+    _, _, X_tr, _, rmse_hist, reach_info = results[strat]
+    reached, attempted = reach_info
+    rd = rmse_hist[-1][1]
+    lvl_str = f"{rd.get('rmse_subgrid_levelset', float('nan')):>12.4f}"
+    reach_str = f"{reached:>3}/{attempted:<3}"
+    print(
+        f"{label:<30} {len(X_tr):>8} {reach_str:>12}"
+        f"{rd['rmse_full_grid']:>12.4f}{rd['rmse_subgrid']:>12.4f}{lvl_str}"
     )
 
 # %%
@@ -451,7 +501,7 @@ axes[0, 2].axis("off")
 
 for i, strat in enumerate(strategies):
     r = i + 1
-    mu, var, X_tr, y_tr, rmse_hist = results[strat]
+    mu, var, X_tr, y_tr, rmse_hist, reach_info = results[strat]
 
     # Col 0: Mean + Samples
     im_m = axes[r, 0].imshow(
@@ -483,9 +533,10 @@ for i, strat in enumerate(strategies):
         cmap="Reds",
         extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
     )
-    title_rmse = f"Final Subgrid RMSE: {rmse_hist[-1][1]:.4f}"
-    if eval_alpha is not None:
-        title_rmse += f" (Level Set > {eval_alpha})"
+    final_rd = rmse_hist[-1][1]
+    title_rmse = f"Subgrid RMSE: {final_rd['rmse_subgrid']:.4f}"
+    if eval_alpha is not None and "rmse_subgrid_levelset" in final_rd:
+        title_rmse += f" | Level Set: {final_rd['rmse_subgrid_levelset']:.4f}"
     axes[r, 1].set_title(f"{labels[i]}: Abs Error\n{title_rmse}")
     rect_e = patches.Rectangle(
         (margin + 0.5, margin + 0.5),
@@ -533,7 +584,8 @@ markers = ["o", "s", "^", "D"]
 for i, strat in enumerate(strategies):
     rmse_hist = results[strat][4]
     loops_x = [x[0] for x in rmse_hist]
-    loops_y = [x[1] for x in rmse_hist]
+    rmse_key = "rmse_subgrid_levelset" if eval_alpha is not None else "rmse_subgrid"
+    loops_y = [x[1][rmse_key] for x in rmse_hist]
     plt.plot(
         loops_x,
         loops_y,
@@ -558,4 +610,77 @@ plt.grid(True, linestyle="--", alpha=0.7)
 rmse_path = "plots/bo_active/bo_rmse_scaling.png"
 plt.savefig(rmse_path)
 print(f"Saved RMSE scaling plot to {rmse_path}")
+plt.show()
+
+# %%
+# 6. Subgrid-Only Posteriors
+# ==========================
+sub_extent = [margin + 0.5, margin + subgrid_size + 0.5, margin + 0.5, margin + subgrid_size + 0.5]
+
+fig_sub, axes_sub = plt.subplots(len(strategies), 3, figsize=(15, 5 * len(strategies)))
+
+for i, strat in enumerate(strategies):
+    mu, var, X_tr, y_tr, rmse_hist, _ = results[strat]
+    mu_sub = mu[margin:-margin, margin:-margin]
+    var_sub = var[margin:-margin, margin:-margin]
+    err_sub = jnp.abs(true_u_subgrid - mu_sub)
+
+    # Col 0: Subgrid absolute error
+    im_e = axes_sub[i, 0].imshow(err_sub.T, origin="lower", cmap="Reds", extent=sub_extent)
+    axes_sub[i, 0].set_title(f"{labels[i]}: Subgrid Abs Error")
+    plt.colorbar(im_e, ax=axes_sub[i, 0])
+
+    # Col 1: Subgrid variance
+    im_v = axes_sub[i, 1].imshow(var_sub.T, origin="lower", cmap="plasma", extent=sub_extent)
+    axes_sub[i, 1].set_title(f"{labels[i]}: Subgrid Variance")
+    plt.colorbar(im_v, ax=axes_sub[i, 1])
+
+    # Col 2: Sample scatter on subgrid true field
+    im_f = axes_sub[i, 2].imshow(true_u_subgrid.T, origin="lower", cmap="viridis", extent=sub_extent)
+    # Filter samples within subgrid
+    in_sub = (
+        (X_tr[:, 0] >= margin + 1) & (X_tr[:, 0] <= margin + subgrid_size)
+        & (X_tr[:, 1] >= margin + 1) & (X_tr[:, 1] <= margin + subgrid_size)
+    )
+    axes_sub[i, 2].scatter(
+        X_tr[in_sub, 0], X_tr[in_sub, 1], c="red", s=15, edgecolors="k", linewidths=0.5
+    )
+    axes_sub[i, 2].set_title(f"{labels[i]}: Samples on Subgrid ({int(in_sub.sum())}/{len(X_tr)})")
+    plt.colorbar(im_f, ax=axes_sub[i, 2])
+
+plt.tight_layout()
+subgrid_path = "plots/bo_active/bo_subgrid_posteriors.png"
+plt.savefig(subgrid_path)
+print(f"Saved subgrid posteriors plot to {subgrid_path}")
+plt.show()
+
+# %%
+# 7. RMSE Scaling — 3 Subplots
+# =============================
+n_rmse_cols = 3 if eval_alpha is not None else 2
+fig_rmse, axes_rmse = plt.subplots(1, n_rmse_cols, figsize=(7 * n_rmse_cols, 6))
+
+rmse_keys = ["rmse_full_grid", "rmse_subgrid"]
+rmse_titles = ["RMSE (Entire Grid)", "RMSE (Subgrid)"]
+if eval_alpha is not None:
+    rmse_keys.append("rmse_subgrid_levelset")
+    rmse_titles.append(f"RMSE (Subgrid Level Set > {eval_alpha})")
+
+for col, (rkey, rtitle) in enumerate(zip(rmse_keys, rmse_titles)):
+    ax = axes_rmse[col]
+    for i, strat in enumerate(strategies):
+        rmse_hist = results[strat][4]
+        xs = [x[0] for x in rmse_hist]
+        ys = [x[1][rkey] for x in rmse_hist]
+        ax.plot(xs, ys, marker=markers[i], color=colors[i], label=labels[i], linewidth=2)
+    ax.set_xlabel("Total Samples")
+    ax.set_ylabel(rtitle)
+    ax.set_title(rtitle)
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.7)
+
+plt.tight_layout()
+rmse_all_path = "plots/bo_active/bo_rmse_scaling_all.png"
+plt.savefig(rmse_all_path)
+print(f"Saved multi-RMSE scaling plot to {rmse_all_path}")
 plt.show()
