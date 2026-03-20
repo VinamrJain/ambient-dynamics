@@ -34,36 +34,6 @@ class DPAgentConfig(AgentConfig):
 
 
 # ---------------------------------------------------------------------------
-# Transition helpers  (pure JAX, dimension-generic)
-# ---------------------------------------------------------------------------
-
-def _build_field_pmf_table(arena: NavigationArena) -> jnp.ndarray:
-    """Get the field PMF at every grid cell as a single JAX array.
-
-    Returns
-    -------
-    jnp.ndarray
-        2D env: shape (n_x, n_y, 2*d_max+1)
-            entry [i,j,u] = P(ambient_disp = u - d_max | pos=(i+1,j+1))
-        3D env: shape (n_x, n_y, n_z, 2*d_max+1, 2*d_max+1)
-            entry [i,j,k,u,v] = P(ambient_disp = (u-d_max, v-d_max) | pos=(i+1,j+1,k+1))
-    """
-    return arena.field.get_displacement_pmf_grid()
-
-
-def _get_actor_pmf(arena: NavigationArena) -> jnp.ndarray:
-    """Return controllable-axis PMF as a JAX array.
-
-    Returns
-    -------
-    jnp.ndarray
-        Shape (n_actions, 2*z_max+1).
-        Entry [a, v] = P(ctrl_disp = v - z_max | action = a).
-    """
-    return jnp.asarray(arena.actor.get_controllable_displacement_pmf())
-
-
-# ---------------------------------------------------------------------------
 # Backward induction  -- 2D
 # ---------------------------------------------------------------------------
 
@@ -354,8 +324,8 @@ class DPAgent(Agent):
         self._ndim = cfg.ndim
 
         reward = arena.reward_fn.compute_grid(cfg)
-        field_pmf = _build_field_pmf_table(arena)
-        actor_pmf = _get_actor_pmf(arena)
+        field_pmf = arena.field.get_displacement_pmf_grid()
+        actor_pmf = jnp.asarray(arena.actor.get_controllable_displacement_pmf())
 
         # Validate that actor PMF is consistent with the agent's action count
         n_actions_from_pmf = actor_pmf.shape[0]
