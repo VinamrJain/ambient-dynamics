@@ -23,6 +23,8 @@ class APSSPAgentConfig(AgentConfig):
     """Configuration for the AP-SSP agent."""
     max_iters: int = 2000
     tol: float = 1e-3
+    debug: bool = False
+
 
 def _ap_ssp_value_iteration_2d(
     field_pmf: jnp.ndarray,
@@ -34,6 +36,7 @@ def _ap_ssp_value_iteration_2d(
     boundary_mode: str,
     max_iters: int = 2000,
     tol: float = 1e-3,
+    debug: bool = False,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Compute All-Pairs Stochastic Shortest Path (AP-SSP) tables for 2D.
     
@@ -93,52 +96,62 @@ def _ap_ssp_value_iteration_2d(
     raw_next_j = all_j[:, None] + v_offsets[None, :]
     next_j = _apply_boundary_j(raw_next_j)
     oob_j = _oob_mask_j(raw_next_j) if boundary_mode == "terminal" else None
-    
-    @jax.jit
-    def step_fn(val):
-        iter_count, H, Pi, max_diff = val
-        
-        # Build indexing for H lookup
-        idx_i = next_i[:, None, :, None]
-        idx_j = next_j[None, :, None, :]
-        
-        # H_lookup shape: (n_x, n_y, 2d+1, 2z+1, n_x, n_y)
-        # Advanced indexing in JAX:
+
+    # Pre-compute indexing arrays outside the loop
+    idx_i = next_i[:, None, :, None]
+    idx_j = next_j[None, :, None, :]
+
+    if boundary_mode == "terminal":
+        oob_mask = oob_i[:, None, :, None] | oob_j[None, :, None, :]
+    else:
+        oob_mask = None
+
+    def body_fn(val):
+        iter_count, H, _Pi, _max_diff = val
+
         H_lookup = H[idx_i, idx_j]
-        
-        if boundary_mode == "terminal":
-            oob_mask = oob_i[:, None, :, None] | oob_j[None, :, None, :]
-            # H_lookup should be max_cost for out-of-bounds transitions
+
+        if oob_mask is not None:
             H_lookup = jnp.where(oob_mask[..., None, None], max_cost, H_lookup)
-            
-        # Expectation over ambient field
-        # W shape: (n_x, n_y, 2z+1, n_x, n_y)
+
         W = jnp.einsum("iju,ijuvgh->ijvgh", field_pmf, H_lookup)
-        
-        # Expectation over actor (actions)
-        # Q shape: (n_x, n_y, n_act, n_x, n_y)
         Q = 1.0 + jnp.einsum("av,ijvgh->ijagh", actor_pmf, W)
         
         H_new = jnp.min(Q, axis=2)
         Pi_new = jnp.argmin(Q, axis=2).astype(jnp.int32)
-        
-        # Apply boundary/goal condition
+
         H_new = jnp.where(reached_mask, 0.0, H_new)
-        
-        diff = jnp.max(jnp.abs(H - H_new))
+        diff = jnp.max(jnp.abs(H - H_new)).astype(jnp.float32)
         return (iter_count + 1, H_new, Pi_new, diff)
-        
-    init_val = (0, H_init, jnp.zeros_like(H_init, dtype=jnp.int32), jnp.array(1e6, dtype=jnp.float32))
-    val = init_val
-    
-    from tqdm import tqdm
-    with tqdm(total=max_iters, desc="AP-SSP Value Iteration") as pbar:
-        while val[0] < max_iters and val[3] > tol:
-            val = step_fn(val)
-            pbar.update(1)
-            pbar.set_postfix({"max_diff": f"{float(val[3]):.4f}"})
-            
-    return val[1], val[2]
+
+    Pi_init = jnp.zeros_like(H_init, dtype=jnp.int32)
+    init_val = (jnp.array(0), H_init, Pi_init, jnp.array(1e6, dtype=jnp.float32))
+
+    if debug:
+        from tqdm import tqdm
+
+        step_fn = jax.jit(body_fn)
+        val = init_val
+        with tqdm(total=max_iters, desc="AP-SSP Value Iteration") as pbar:
+            while val[0] < max_iters and val[3] > tol:
+                val = step_fn(val)
+                pbar.update(1)
+                pbar.set_postfix({"max_diff": f"{float(val[3]):.4f}"})
+        iters, H, Pi, max_diff = val
+    else:
+        @jax.jit
+        def _solve(init_val):
+            def cond_fn(val):
+                iter_count, _H, _Pi, max_diff = val
+                return (iter_count < max_iters) & (max_diff > tol)
+            return jax.lax.while_loop(cond_fn, body_fn, init_val)
+
+        iters, H, Pi, max_diff = _solve(init_val)
+
+    iters, max_diff = int(iters), float(max_diff)
+    print(f"AP-SSP converged in {iters} iters (max_diff={max_diff:.6f})")
+
+    return H, Pi
 
 
 class APSSPAgent(Agent):
@@ -181,9 +194,16 @@ class APSSPAgent(Agent):
         boundary_mode = arena.boundary_mode
 
         H, Pi = _ap_ssp_value_iteration_2d(
-            field_pmf, actor_pmf, vicinity_radius, vicinity_metric,
-            d_max, z_max, boundary_mode,
-            max_iters=self.config.max_iters, tol=self.config.tol
+            field_pmf,
+            actor_pmf,
+            vicinity_radius,
+            vicinity_metric,
+            d_max,
+            z_max,
+            boundary_mode,
+            max_iters=self.config.max_iters,
+            tol=self.config.tol,
+            debug=self.config.debug,
         )
         self._cost_table = np.array(H)
         self._policy_table = np.array(Pi)
