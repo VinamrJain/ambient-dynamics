@@ -118,7 +118,7 @@ assert jnp.array_equal(true_u, field._precomputed_u.squeeze()), "Field was re-sa
 # %%
 # Plan AP-SSP
 print(f"Planning AP-SSP for all state-goal pairs ({grid_size}x{grid_size}) ...")
-agent = APSSPAgent(APSSPAgentConfig(max_iters=500, tol=1e-3))
+agent = APSSPAgent(APSSPAgentConfig(max_iters=1000, tol=1e-3))
 agent.plan(arena)
 print("Planning complete!")
 
@@ -270,6 +270,9 @@ def run_trajectory_loops(
     y_obs.append([disp.u])
 
     rmse_history = []
+    wind_magnitude_history = []  # (num_samples, cumulative_|true_u|)
+    cumulative_wind_mag = float(jnp.abs(true_u[initial_pos.i - 1, initial_pos.j - 1]))
+    wind_magnitude_history.append((1, cumulative_wind_mag))
     loop_idx = 1
     gp_params = None  # warm-start params
     targets_attempted = 0
@@ -365,6 +368,12 @@ def run_trajectory_loops(
             y_obs.append([disp.u])
             steps_this_loop += 1
 
+            # Track cumulative wind magnitude at visited locations
+            cumulative_wind_mag += float(jnp.abs(
+                true_u[state.last_position.i - 1, state.last_position.j - 1]
+            ))
+            wind_magnitude_history.append((len(X_obs), cumulative_wind_mag))
+
             if state.target_reached:
                 targets_reached += 1
                 print(f"  -> Reached in {steps_this_loop} steps.")
@@ -400,8 +409,9 @@ def run_trajectory_loops(
     print(
         f"Final | Samples: {len(X_obs)} | Reach: {targets_reached}/{targets_attempted}"
         f" | RMSE(subgrid): {rmse_dict['rmse_subgrid']:.4f}"
+        f" | Cum. Wind Mag: {cumulative_wind_mag:.2f}"
     )
-    return mu, var, X_tr, y_tr, rmse_history, (targets_reached, targets_attempted)
+    return mu, var, X_tr, y_tr, rmse_history, (targets_reached, targets_attempted), wind_magnitude_history
 
 
 # %%
@@ -413,7 +423,7 @@ eval_alpha = 2.0  # Set to a threshold to estimate level sets, or None for whole
 
 results = {}
 strategies = ["random", "max_variance", "ei", "cost_aware_ei"]
-labels = ["Random Target", "Max Variance", "Expected Improvement (EI)", "Cost-Aware EI"]
+labels = ["Random Target", "Max Variance", "EI", "Cost-Aware EI"]
 
 os.makedirs("plots/bo_active", exist_ok=True)
 for idx, strat in enumerate(strategies):
@@ -425,29 +435,29 @@ for idx, strat in enumerate(strategies):
         max_total_samples=max_total_samples,
         max_steps_per_loop=max_steps_per_loop,
         alpha=eval_alpha,
-        gif_path=None,
+        gif_path=gif_path,
         optimize=True
     )
 
 # Print comparison table
 print("\n=== Strategy Comparison ===")
-print(f"{'Strategy':<30} {'Samples':>8} {'Reach':>12} {'RMSE(grid)':>12} {'RMSE(sub)':>12} {'RMSE(lvl)':>12}")
-print("-" * 92)
+print(f"{'Strategy':<30} {'Samples':>8} {'Reach':>12} {'RMSE(grid)':>12} {'RMSE(sub)':>12} {'RMSE(lvl)':>12} {'Cum|wind|':>12}")
+print("-" * 106)
 for strat, label in zip(strategies, labels):
-    _, _, X_tr, _, rmse_hist, reach_info = results[strat]
+    _, _, X_tr, _, rmse_hist, reach_info, wind_hist = results[strat]
     reached, attempted = reach_info
     rd = rmse_hist[-1][1]
     lvl_str = f"{rd.get('rmse_subgrid_levelset', float('nan')):>12.4f}"
     reach_str = f"{reached:>3}/{attempted:<3}"
+    final_wind = wind_hist[-1][1] if wind_hist else 0.0
     print(
         f"{label:<30} {len(X_tr):>8} {reach_str:>12}"
-        f"{rd['rmse_full_grid']:>12.4f}{rd['rmse_subgrid']:>12.4f}{lvl_str}"
+        f"{rd['rmse_full_grid']:>12.4f}{rd['rmse_subgrid']:>12.4f}{lvl_str}{final_wind:>12.2f}"
     )
 
 # %%
 # 5. Plotting
 # ===========
-print("\nGenerating plots...")
 os.makedirs("plots/bo_active", exist_ok=True)
 
 fig, axes = plt.subplots(5, 3, figsize=(15, 25))
@@ -497,11 +507,32 @@ if eval_alpha is not None:
 else:
     axes[0, 1].axis("off")
 
-axes[0, 2].axis("off")
+# Expected Step Cost from center
+cost_from_center = agent._cost_table[
+    initial_pos.i - 1, initial_pos.j - 1, :, :
+]
+im0_cost = axes[0, 2].imshow(
+    cost_from_center.T,
+    origin="lower",
+    cmap="hot",
+    extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
+)
+axes[0, 2].set_title(f"Expected Step Cost from Center ({initial_pos.i},{initial_pos.j})")
+rect_cost = patches.Rectangle(
+    (margin + 0.5, margin + 0.5),
+    subgrid_size,
+    subgrid_size,
+    linewidth=2,
+    edgecolor="cyan",
+    facecolor="none",
+    linestyle="--",
+)
+axes[0, 2].add_patch(rect_cost)
+plt.colorbar(im0_cost, ax=axes[0, 2])
 
 for i, strat in enumerate(strategies):
     r = i + 1
-    mu, var, X_tr, y_tr, rmse_hist, reach_info = results[strat]
+    mu, var, X_tr, y_tr, rmse_hist, reach_info, wind_hist = results[strat]
 
     # Col 0: Mean + Samples
     im_m = axes[r, 0].imshow(
@@ -620,14 +651,14 @@ sub_extent = [margin + 0.5, margin + subgrid_size + 0.5, margin + 0.5, margin + 
 fig_sub, axes_sub = plt.subplots(len(strategies), 3, figsize=(15, 5 * len(strategies)))
 
 for i, strat in enumerate(strategies):
-    mu, var, X_tr, y_tr, rmse_hist, _ = results[strat]
+    mu, var, X_tr, y_tr, rmse_hist, _, _ = results[strat]
     mu_sub = mu[margin:-margin, margin:-margin]
     var_sub = var[margin:-margin, margin:-margin]
     err_sub = jnp.abs(true_u_subgrid - mu_sub)
 
     # Col 0: Subgrid absolute error
     im_e = axes_sub[i, 0].imshow(err_sub.T, origin="lower", cmap="Reds", extent=sub_extent)
-    axes_sub[i, 0].set_title(f"{labels[i]}: Subgrid Abs Error")
+    axes_sub[i, 0].set_title(f"{labels[i]}: Subgrid Abs Error \n RMSE: {rmse_hist[-1][1]['rmse_subgrid']:.4f} | Level Set: {rmse_hist[-1][1]['rmse_subgrid_levelset']:.4f}")
     plt.colorbar(im_e, ax=axes_sub[i, 0])
 
     # Col 1: Subgrid variance
@@ -683,4 +714,24 @@ plt.tight_layout()
 rmse_all_path = "plots/bo_active/bo_rmse_scaling_all.png"
 plt.savefig(rmse_all_path)
 print(f"Saved multi-RMSE scaling plot to {rmse_all_path}")
+plt.show()
+
+# %%
+# 8. Cumulative Wind Magnitude Scaling
+# =====================================
+plt.figure(figsize=(10, 6))
+for i, strat in enumerate(strategies):
+    wind_hist = results[strat][6]
+    xs = [x[0] for x in wind_hist]
+    ys = [x[1] for x in wind_hist]
+    plt.plot(xs, ys, marker=markers[i], color=colors[i], label=labels[i], linewidth=2, markevery=5)
+
+plt.xlabel("Total Samples")
+plt.ylabel("Cumulative |true wind| along trajectory")
+plt.title("Cumulative Wind Magnitude at Visited Locations")
+plt.legend()
+plt.grid(True, linestyle="--", alpha=0.7)
+wind_path = "plots/bo_active/bo_wind_magnitude_scaling.png"
+plt.savefig(wind_path)
+print(f"Saved wind magnitude scaling plot to {wind_path}")
 plt.show()

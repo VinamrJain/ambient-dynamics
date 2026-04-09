@@ -53,7 +53,11 @@ import optax as ox
 
 from src.env.field.rff_gp_field import RFFGPField
 from src.env.utils.types import GridConfig
-from experiments.field_estimation.utils.evaluation import compute_field_rmse
+
+
+def compute_field_rmse(true_mean: jnp.ndarray, estimated_mean: jnp.ndarray) -> float:
+    """Compute RMSE between true field mean and estimated mean."""
+    return float(jnp.sqrt(jnp.mean((true_mean - estimated_mean) ** 2)))
 
 # %%
 # 1. Setup True Field
