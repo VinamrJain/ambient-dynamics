@@ -174,8 +174,7 @@ def test_cumulative_reward_and_reset(ndim):
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
-        ({"vicinity_radius": 0.0}, "vicinity_radius must be positive"),
-        ({"vicinity_radius": -1.0}, "vicinity_radius must be positive"),
+        ({"vicinity_radius": -1.0}, "vicinity_radius must be non-negative"),
     ],
 )
 def test_navigation_arena_rejects_invalid_params(kwargs, match):
