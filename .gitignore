@@ -5,10 +5,7 @@
 
 .DS_Store
 __pycache__
-*.code-workspace
 
-output/
-.cursor/
 
 *.html
 *.gif
@@ -16,3 +13,5 @@ output/
 *.png
 
 .pytest_cache/
+
+output/
