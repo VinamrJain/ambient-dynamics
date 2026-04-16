@@ -236,6 +236,13 @@ def ei_acq(mu_flat, var_flat, y_train):
     return jnp.where(sigma > 1e-6, ei, 0.0)
 
 
+def thompson_acq(mu_flat, var_flat, key):
+    """Thompson sampling: draw from GP posterior marginals, pick argmax |sample|."""
+    sigma = jnp.sqrt(jnp.maximum(var_flat, 1e-9))
+    samples = mu_flat + sigma * jr.normal(key, shape=mu_flat.shape)
+    return jnp.abs(samples)
+
+
 # %%
 # 3. Trajectory Loop Function
 # ===========================
@@ -270,9 +277,19 @@ def run_trajectory_loops(
     y_obs.append([disp.u])
 
     rmse_history = []
-    wind_magnitude_history = []  # (num_samples, cumulative_|true_u|)
-    cumulative_wind_mag = float(jnp.abs(true_u[initial_pos.i - 1, initial_pos.j - 1]))
-    wind_magnitude_history.append((1, cumulative_wind_mag))
+    f_star = float(jnp.max(jnp.abs(true_u_subgrid)))
+    max_observed_abs = 0.0
+    cumulative_regret = 0.0
+    regret_history = []  # (num_samples, cumulative_regret, simple_regret)
+
+    # Regret for initial sample
+    _pi, _pj = initial_pos.i, initial_pos.j
+    if (margin + 1 <= _pi <= margin + subgrid_size) and (margin + 1 <= _pj <= margin + subgrid_size):
+        _val = float(jnp.abs(true_u[_pi - 1, _pj - 1]))
+        max_observed_abs = max(max_observed_abs, _val)
+        cumulative_regret += f_star - _val
+    regret_history.append((1, cumulative_regret, f_star - max_observed_abs))
+
     loop_idx = 1
     gp_params = None  # warm-start params
     targets_attempted = 0
@@ -331,6 +348,11 @@ def run_trajectory_loops(
             acq_cost_aware = acq / costs
             acq_cost_aware = jnp.where(valid_mask, acq_cost_aware, -jnp.inf)
             best_idx = int(jnp.argmax(acq_cost_aware))
+        elif acq_type == "thompson":
+            key, ts_key = jr.split(key)
+            acq = thompson_acq(mu_flat, var_flat, ts_key)
+            acq = jnp.where(valid_mask, acq, -jnp.inf)
+            best_idx = int(jnp.argmax(acq))
         else:
             raise ValueError(f"Unknown acq_type: {acq_type}")
 
@@ -368,11 +390,13 @@ def run_trajectory_loops(
             y_obs.append([disp.u])
             steps_this_loop += 1
 
-            # Track cumulative wind magnitude at visited locations
-            cumulative_wind_mag += float(jnp.abs(
-                true_u[state.last_position.i - 1, state.last_position.j - 1]
-            ))
-            wind_magnitude_history.append((len(X_obs), cumulative_wind_mag))
+            # Track regret (subgrid observations only)
+            _pi, _pj = state.last_position.i, state.last_position.j
+            if (margin + 1 <= _pi <= margin + subgrid_size) and (margin + 1 <= _pj <= margin + subgrid_size):
+                _val = float(jnp.abs(true_u[_pi - 1, _pj - 1]))
+                max_observed_abs = max(max_observed_abs, _val)
+                cumulative_regret += f_star - _val
+            regret_history.append((len(X_obs), cumulative_regret, f_star - max_observed_abs))
 
             if state.target_reached:
                 targets_reached += 1
@@ -409,9 +433,9 @@ def run_trajectory_loops(
     print(
         f"Final | Samples: {len(X_obs)} | Reach: {targets_reached}/{targets_attempted}"
         f" | RMSE(subgrid): {rmse_dict['rmse_subgrid']:.4f}"
-        f" | Cum. Wind Mag: {cumulative_wind_mag:.2f}"
+        f" | Cum. Regret: {cumulative_regret:.2f}"
     )
-    return mu, var, X_tr, y_tr, rmse_history, (targets_reached, targets_attempted), wind_magnitude_history
+    return mu, var, X_tr, y_tr, rmse_history, (targets_reached, targets_attempted), regret_history
 
 
 # %%
@@ -422,8 +446,8 @@ max_steps_per_loop = 30
 eval_alpha = 2.0  # Set to a threshold to estimate level sets, or None for whole subgrid
 
 results = {}
-strategies = ["random", "max_variance", "ei", "cost_aware_ei"]
-labels = ["Random Target", "Max Variance", "EI", "Cost-Aware EI"]
+strategies = ["random", "max_variance", "ei", "cost_aware_ei", "thompson"]
+labels = ["Random Target", "Max Variance", "EI", "Cost-Aware EI", "Thompson"]
 
 os.makedirs("plots/bo_active", exist_ok=True)
 for idx, strat in enumerate(strategies):
@@ -441,18 +465,20 @@ for idx, strat in enumerate(strategies):
 
 # Print comparison table
 print("\n=== Strategy Comparison ===")
-print(f"{'Strategy':<30} {'Samples':>8} {'Reach':>12} {'RMSE(grid)':>12} {'RMSE(sub)':>12} {'RMSE(lvl)':>12} {'Cum|wind|':>12}")
-print("-" * 106)
+print(f"{'Strategy':<30} {'Samples':>8} {'Reach':>12} {'RMSE(grid)':>12} {'RMSE(sub)':>12} {'RMSE(lvl)':>12} {'Cum.Regret':>12} {'Simp.Regret':>12}")
+print("-" * 118)
 for strat, label in zip(strategies, labels):
-    _, _, X_tr, _, rmse_hist, reach_info, wind_hist = results[strat]
+    _, _, X_tr, _, rmse_hist, reach_info, regret_hist = results[strat]
     reached, attempted = reach_info
     rd = rmse_hist[-1][1]
     lvl_str = f"{rd.get('rmse_subgrid_levelset', float('nan')):>12.4f}"
     reach_str = f"{reached:>3}/{attempted:<3}"
-    final_wind = wind_hist[-1][1] if wind_hist else 0.0
+    final_cum_regret = regret_hist[-1][1] if regret_hist else 0.0
+    final_simple_regret = regret_hist[-1][2] if regret_hist else 0.0
     print(
         f"{label:<30} {len(X_tr):>8} {reach_str:>12}"
-        f"{rd['rmse_full_grid']:>12.4f}{rd['rmse_subgrid']:>12.4f}{lvl_str}{final_wind:>12.2f}"
+        f"{rd['rmse_full_grid']:>12.4f}{rd['rmse_subgrid']:>12.4f}{lvl_str}"
+        f"{final_cum_regret:>12.2f}{final_simple_regret:>12.4f}"
     )
 
 # %%
@@ -460,278 +486,162 @@ for strat, label in zip(strategies, labels):
 # ===========
 os.makedirs("plots/bo_active", exist_ok=True)
 
-fig, axes = plt.subplots(5, 3, figsize=(15, 25))
+plt.rcParams.update({
+    "font.size": 10,
+    "axes.titlesize": 11,
+    "axes.labelsize": 10,
+})
 
-# Row 0: True Field
-im0 = axes[0, 0].imshow(
-    true_u.T,
-    origin="lower",
-    cmap="viridis",
-    extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
-)
-axes[0, 0].set_title("True Field")
-# Draw Subgrid boundary
-rect = patches.Rectangle(
-    (margin + 0.5, margin + 0.5),
-    subgrid_size,
-    subgrid_size,
-    linewidth=2,
-    edgecolor="r",
-    facecolor="none",
-    linestyle="--",
-)
-axes[0, 0].add_patch(rect)
+colors = ["b", "g", "r", "purple", "orange"]
+markers = ["o", "s", "^", "D", "v"]
 
-plt.colorbar(im0, ax=axes[0, 0])
+_extent = [0.5, grid_size + 0.5, 0.5, grid_size + 0.5]
+_sub_extent = [margin + 0.5, margin + subgrid_size + 0.5, margin + 0.5, margin + subgrid_size + 0.5]
+_cx = np.arange(1, grid_size + 1)
+_cy = np.arange(1, grid_size + 1)
 
-# True Field Level Set Mask (if alpha provided)
-if eval_alpha is not None:
-    mask_plot = (jnp.abs(true_u) > eval_alpha).astype(float)
-    im0_mask = axes[0, 1].imshow(
-        mask_plot.T,
-        origin="lower",
-        cmap="gray",
-        extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
-    )
-    axes[0, 1].set_title(f"True Level Set (|u| > {eval_alpha})")
-    rect_mask = patches.Rectangle(
-        (margin + 0.5, margin + 0.5),
-        subgrid_size,
-        subgrid_size,
-        linewidth=2,
-        edgecolor="r",
-        facecolor="none",
-        linestyle="--",
-    )
-    axes[0, 1].add_patch(rect_mask)
-else:
-    axes[0, 1].axis("off")
 
-# Expected Step Cost from center
-cost_from_center = agent._cost_table[
-    initial_pos.i - 1, initial_pos.j - 1, :, :
-]
-im0_cost = axes[0, 2].imshow(
-    cost_from_center.T,
-    origin="lower",
-    cmap="hot",
-    extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
-)
-axes[0, 2].set_title(f"Expected Step Cost from Center ({initial_pos.i},{initial_pos.j})")
-rect_cost = patches.Rectangle(
-    (margin + 0.5, margin + 0.5),
-    subgrid_size,
-    subgrid_size,
-    linewidth=2,
-    edgecolor="cyan",
-    facecolor="none",
-    linestyle="--",
-)
-axes[0, 2].add_patch(rect_cost)
-plt.colorbar(im0_cost, ax=axes[0, 2])
+def _add_subgrid_rect(ax, edgecolor="white"):
+    ax.add_patch(patches.Rectangle(
+        (margin + 0.5, margin + 0.5), subgrid_size, subgrid_size,
+        linewidth=1.5, edgecolor=edgecolor, facecolor="none", linestyle="--",
+    ))
 
-for i, strat in enumerate(strategies):
-    r = i + 1
-    mu, var, X_tr, y_tr, rmse_hist, reach_info, wind_hist = results[strat]
-
-    # Col 0: Mean + Samples
-    im_m = axes[r, 0].imshow(
-        mu.T,
-        origin="lower",
-        cmap="viridis",
-        extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
-    )
-    axes[r, 0].plot(X_tr[:, 0], X_tr[:, 1], color="white", alpha=0.5, linewidth=1)
-    axes[r, 0].scatter(X_tr[:, 0], X_tr[:, 1], c="red", s=10, edgecolors="k")
-    axes[r, 0].set_title(f"{labels[i]}: Predicted Mean\n({len(X_tr)} samples)")
-    rect_m = patches.Rectangle(
-        (margin + 0.5, margin + 0.5),
-        subgrid_size,
-        subgrid_size,
-        linewidth=2,
-        edgecolor="r",
-        facecolor="none",
-        linestyle="--",
-    )
-    axes[r, 0].add_patch(rect_m)
-    plt.colorbar(im_m, ax=axes[r, 0])
-
-    # Col 1: Error
-    err = jnp.abs(true_u - mu)
-    im_e = axes[r, 1].imshow(
-        err.T,
-        origin="lower",
-        cmap="Reds",
-        extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
-    )
-    final_rd = rmse_hist[-1][1]
-    title_rmse = f"Subgrid RMSE: {final_rd['rmse_subgrid']:.4f}"
-    if eval_alpha is not None and "rmse_subgrid_levelset" in final_rd:
-        title_rmse += f" | Level Set: {final_rd['rmse_subgrid_levelset']:.4f}"
-    axes[r, 1].set_title(f"{labels[i]}: Abs Error\n{title_rmse}")
-    rect_e = patches.Rectangle(
-        (margin + 0.5, margin + 0.5),
-        subgrid_size,
-        subgrid_size,
-        linewidth=2,
-        edgecolor="r",
-        facecolor="none",
-        linestyle="--",
-    )
-    axes[r, 1].add_patch(rect_e)
-    plt.colorbar(im_e, ax=axes[r, 1])
-
-    # Col 2: Variance
-    im_v = axes[r, 2].imshow(
-        var.T,
-        origin="lower",
-        cmap="plasma",
-        extent=[0.5, grid_size + 0.5, 0.5, grid_size + 0.5],
-    )
-    axes[r, 2].set_title(f"{labels[i]}: Variance")
-    rect_v = patches.Rectangle(
-        (margin + 0.5, margin + 0.5),
-        subgrid_size,
-        subgrid_size,
-        linewidth=2,
-        edgecolor="r",
-        facecolor="none",
-        linestyle="--",
-    )
-    axes[r, 2].add_patch(rect_v)
-    plt.colorbar(im_v, ax=axes[r, 2])
-
-plt.tight_layout()
-posteriors_path = "plots/bo_active/bo_posteriors.png"
-plt.savefig(posteriors_path)
-print(f"Saved posteriors plot to {posteriors_path}")
-plt.show()
-
-# Figure: RMSE Scaling
-plt.figure(figsize=(10, 6))
-colors = ["b", "g", "r", "purple"]
-markers = ["o", "s", "^", "D"]
-
-for i, strat in enumerate(strategies):
-    rmse_hist = results[strat][4]
-    loops_x = [x[0] for x in rmse_hist]
-    rmse_key = "rmse_subgrid_levelset" if eval_alpha is not None else "rmse_subgrid"
-    loops_y = [x[1][rmse_key] for x in rmse_hist]
-    plt.plot(
-        loops_x,
-        loops_y,
-        marker=markers[i],
-        color=colors[i],
-        label=labels[i],
-        linewidth=2,
-    )
-
-plt.xlabel("Total Samples")
-if eval_alpha is not None:
-    plt.ylabel(f"Subgrid RMSE (Level Set > {eval_alpha})")
-    plt.title(
-        f"RMSE vs Total Samples (Online Active Learning - Level Set > {eval_alpha})"
-    )
-else:
-    plt.ylabel("Subgrid RMSE")
-    plt.title("RMSE vs Total Samples (Online Active Learning)")
-
-plt.legend()
-plt.grid(True, linestyle="--", alpha=0.7)
-rmse_path = "plots/bo_active/bo_rmse_scaling.png"
-plt.savefig(rmse_path)
-print(f"Saved RMSE scaling plot to {rmse_path}")
-plt.show()
 
 # %%
-# 6. Subgrid-Only Posteriors
-# ==========================
-sub_extent = [margin + 0.5, margin + subgrid_size + 0.5, margin + 0.5, margin + subgrid_size + 0.5]
+# Figure 1: Posteriors grid (6×4)
+# ================================
+fig, axes = plt.subplots(6, 4, figsize=(20, 30))
 
-fig_sub, axes_sub = plt.subplots(len(strategies), 3, figsize=(15, 5 * len(strategies)))
+# Row 0: Ground truth overview
+im0 = axes[0, 0].imshow(true_u.T, origin="lower", cmap="RdBu_r", extent=_extent)
+axes[0, 0].set_title("True Field")
+_add_subgrid_rect(axes[0, 0], edgecolor="black")
+plt.colorbar(im0, ax=axes[0, 0])
 
+im0_mag = axes[0, 1].imshow(jnp.abs(true_u).T, origin="lower", cmap="viridis", extent=_extent)
+axes[0, 1].set_title("True Field Magnitude (|u|)")
+_add_subgrid_rect(axes[0, 1], edgecolor="black")
+plt.colorbar(im0_mag, ax=axes[0, 1])
+
+if eval_alpha is not None:
+    mask_plot = (jnp.abs(true_u) > eval_alpha).astype(float)
+    im0_mask = axes[0, 2].imshow(mask_plot.T, origin="lower", cmap="gray", extent=_extent)
+    axes[0, 2].set_title(f"True Level Set (|u| > {eval_alpha})")
+    _add_subgrid_rect(axes[0, 2], edgecolor="red")
+else:
+    axes[0, 2].axis("off")
+
+cost_from_center = agent._cost_table[initial_pos.i - 1, initial_pos.j - 1, :, :]
+im0_h = axes[0, 3].imshow(cost_from_center.T, origin="lower", cmap="hot", extent=_extent)
+axes[0, 3].set_title(f"H Cost from Center ({initial_pos.i},{initial_pos.j})")
+_add_subgrid_rect(axes[0, 3], edgecolor="cyan")
+plt.colorbar(im0_h, ax=axes[0, 3])
+
+# Rows 1-5: Per-strategy
 for i, strat in enumerate(strategies):
-    mu, var, X_tr, y_tr, rmse_hist, _, _ = results[strat]
-    mu_sub = mu[margin:-margin, margin:-margin]
-    var_sub = var[margin:-margin, margin:-margin]
-    err_sub = jnp.abs(true_u_subgrid - mu_sub)
+    r = i + 1
+    mu, var, X_tr, y_tr, rmse_hist, reach_info, regret_hist = results[strat]
+    final_rd = rmse_hist[-1][1]
 
-    # Col 0: Subgrid absolute error
-    im_e = axes_sub[i, 0].imshow(err_sub.T, origin="lower", cmap="Reds", extent=sub_extent)
-    axes_sub[i, 0].set_title(f"{labels[i]}: Subgrid Abs Error \n RMSE: {rmse_hist[-1][1]['rmse_subgrid']:.4f} | Level Set: {rmse_hist[-1][1]['rmse_subgrid_levelset']:.4f}")
-    plt.colorbar(im_e, ax=axes_sub[i, 0])
+    # Col 0: Predicted mean + trajectory + estimated level set contour
+    im_m = axes[r, 0].imshow(mu.T, origin="lower", cmap="RdBu_r", extent=_extent)
+    axes[r, 0].plot(X_tr[:, 0], X_tr[:, 1], color="white", alpha=0.4, linewidth=0.8)
+    axes[r, 0].scatter(X_tr[:, 0], X_tr[:, 1], c="red", s=8, edgecolors="none")
+    if eval_alpha is not None:
+        axes[r, 0].contour(_cx, _cy, jnp.abs(mu).T, levels=[eval_alpha],
+                           colors="yellow", linewidths=1.5, linestyles="--")
+    _add_subgrid_rect(axes[r, 0])
+    axes[r, 0].set_title(f"{labels[i]}: Predicted Mean  ({len(X_tr)} samples)")
+    plt.colorbar(im_m, ax=axes[r, 0])
 
-    # Col 1: Subgrid variance
-    im_v = axes_sub[i, 1].imshow(var_sub.T, origin="lower", cmap="plasma", extent=sub_extent)
-    axes_sub[i, 1].set_title(f"{labels[i]}: Subgrid Variance")
-    plt.colorbar(im_v, ax=axes_sub[i, 1])
+    # Col 1: Absolute error + true level set contour
+    err = jnp.abs(true_u - mu)
+    im_e = axes[r, 1].imshow(err.T, origin="lower", cmap="Reds", extent=_extent)
+    if eval_alpha is not None:
+        axes[r, 1].contour(_cx, _cy, jnp.abs(true_u).T, levels=[eval_alpha],
+                           colors="black", linewidths=1.5, linestyles="--")
+    title_rmse = f"RMSE(sub): {final_rd['rmse_subgrid']:.3f}"
+    if eval_alpha is not None and "rmse_subgrid_levelset" in final_rd:
+        title_rmse += f"  lvl: {final_rd['rmse_subgrid_levelset']:.3f}"
+    axes[r, 1].set_title(f"{labels[i]}: Abs Error\n{title_rmse}")
+    _add_subgrid_rect(axes[r, 1])
+    plt.colorbar(im_e, ax=axes[r, 1])
 
-    # Col 2: Sample scatter on subgrid true field
-    im_f = axes_sub[i, 2].imshow(true_u_subgrid.T, origin="lower", cmap="viridis", extent=sub_extent)
-    # Filter samples within subgrid
+    # Col 2: Posterior variance
+    im_v = axes[r, 2].imshow(var.T, origin="lower", cmap="plasma", extent=_extent)
+    axes[r, 2].set_title(f"{labels[i]}: Posterior Variance")
+    _add_subgrid_rect(axes[r, 2])
+    plt.colorbar(im_v, ax=axes[r, 2])
+
+    # Col 3: Sample scatter on subgrid true field
+    im_f = axes[r, 3].imshow(true_u_subgrid.T, origin="lower", cmap="viridis", extent=_sub_extent)
     in_sub = (
         (X_tr[:, 0] >= margin + 1) & (X_tr[:, 0] <= margin + subgrid_size)
         & (X_tr[:, 1] >= margin + 1) & (X_tr[:, 1] <= margin + subgrid_size)
     )
-    axes_sub[i, 2].scatter(
-        X_tr[in_sub, 0], X_tr[in_sub, 1], c="red", s=15, edgecolors="k", linewidths=0.5
-    )
-    axes_sub[i, 2].set_title(f"{labels[i]}: Samples on Subgrid ({int(in_sub.sum())}/{len(X_tr)})")
-    plt.colorbar(im_f, ax=axes_sub[i, 2])
+    axes[r, 3].scatter(X_tr[in_sub, 0], X_tr[in_sub, 1], c="red", s=12,
+                       edgecolors="k", linewidths=0.4)
+    axes[r, 3].set_title(f"{labels[i]}: Subgrid Samples\n({int(in_sub.sum())}/{len(X_tr)} in subgrid)")
+    plt.colorbar(im_f, ax=axes[r, 3])
 
 plt.tight_layout()
-subgrid_path = "plots/bo_active/bo_subgrid_posteriors.png"
-plt.savefig(subgrid_path)
-print(f"Saved subgrid posteriors plot to {subgrid_path}")
+posteriors_path = "plots/bo_active/bo_posteriors.png"
+plt.savefig(posteriors_path, dpi=150)
+print(f"Saved posteriors plot to {posteriors_path}")
 plt.show()
 
 # %%
-# 7. RMSE Scaling — 3 Subplots
-# =============================
-n_rmse_cols = 3 if eval_alpha is not None else 2
-fig_rmse, axes_rmse = plt.subplots(1, n_rmse_cols, figsize=(7 * n_rmse_cols, 6))
+# Figure 2: Metrics Dashboard (2×3)
+# ==================================
+fig_dash, axes_dash = plt.subplots(2, 3, figsize=(21, 12))
 
 rmse_keys = ["rmse_full_grid", "rmse_subgrid"]
-rmse_titles = ["RMSE (Entire Grid)", "RMSE (Subgrid)"]
+rmse_titles = ["RMSE — Full Grid", "RMSE — Subgrid"]
 if eval_alpha is not None:
     rmse_keys.append("rmse_subgrid_levelset")
-    rmse_titles.append(f"RMSE (Subgrid Level Set > {eval_alpha})")
+    rmse_titles.append(f"RMSE — Level Set (> {eval_alpha})")
 
 for col, (rkey, rtitle) in enumerate(zip(rmse_keys, rmse_titles)):
-    ax = axes_rmse[col]
+    ax = axes_dash[0, col]
     for i, strat in enumerate(strategies):
         rmse_hist = results[strat][4]
         xs = [x[0] for x in rmse_hist]
         ys = [x[1][rkey] for x in rmse_hist]
-        ax.plot(xs, ys, marker=markers[i], color=colors[i], label=labels[i], linewidth=2)
+        ax.plot(xs, ys, marker=markers[i], color=colors[i], label=labels[i],
+                linewidth=2, markevery=10)
     ax.set_xlabel("Total Samples")
     ax.set_ylabel(rtitle)
     ax.set_title(rtitle)
     ax.legend()
-    ax.grid(True, linestyle="--", alpha=0.7)
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+for i, strat in enumerate(strategies):
+    regret_hist = results[strat][6]
+    xs = [r[0] for r in regret_hist]
+    cum_ys = [r[1] for r in regret_hist]
+    simp_ys = [r[2] for r in regret_hist]
+    axes_dash[1, 0].plot(xs, cum_ys, marker=markers[i], color=colors[i], label=labels[i],
+                         linewidth=2, markevery=10)
+    axes_dash[1, 1].plot(xs, simp_ys, marker=markers[i], color=colors[i], label=labels[i],
+                         linewidth=2, markevery=10)
+
+axes_dash[1, 0].set_xlabel("Total Samples")
+axes_dash[1, 0].set_ylabel("Cumulative Regret")
+axes_dash[1, 0].set_title("Cumulative Regret (subgrid obs.)")
+axes_dash[1, 0].legend()
+axes_dash[1, 0].grid(True, linestyle="--", alpha=0.5)
+
+axes_dash[1, 1].set_xlabel("Total Samples")
+axes_dash[1, 1].set_ylabel("Simple Regret (best-so-far gap)")
+axes_dash[1, 1].set_title("Simple Regret (subgrid)")
+axes_dash[1, 1].legend()
+axes_dash[1, 1].grid(True, linestyle="--", alpha=0.5)
+
+axes_dash[1, 2].axis("off")
 
 plt.tight_layout()
-rmse_all_path = "plots/bo_active/bo_rmse_scaling_all.png"
-plt.savefig(rmse_all_path)
-print(f"Saved multi-RMSE scaling plot to {rmse_all_path}")
-plt.show()
-
-# %%
-# 8. Cumulative Wind Magnitude Scaling
-# =====================================
-plt.figure(figsize=(10, 6))
-for i, strat in enumerate(strategies):
-    wind_hist = results[strat][6]
-    xs = [x[0] for x in wind_hist]
-    ys = [x[1] for x in wind_hist]
-    plt.plot(xs, ys, marker=markers[i], color=colors[i], label=labels[i], linewidth=2, markevery=5)
-
-plt.xlabel("Total Samples")
-plt.ylabel("Cumulative |true wind| along trajectory")
-plt.title("Cumulative Wind Magnitude at Visited Locations")
-plt.legend()
-plt.grid(True, linestyle="--", alpha=0.7)
-wind_path = "plots/bo_active/bo_wind_magnitude_scaling.png"
-plt.savefig(wind_path)
-print(f"Saved wind magnitude scaling plot to {wind_path}")
+dashboard_path = "plots/bo_active/bo_metrics_dashboard.png"
+plt.savefig(dashboard_path, dpi=150)
+print(f"Saved metrics dashboard to {dashboard_path}")
 plt.show()
