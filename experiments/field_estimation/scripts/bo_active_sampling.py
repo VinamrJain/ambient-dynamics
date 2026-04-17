@@ -118,7 +118,7 @@ assert jnp.array_equal(true_u, field._precomputed_u.squeeze()), "Field was re-sa
 # %%
 # Plan AP-SSP
 print(f"Planning AP-SSP for all state-goal pairs ({grid_size}x{grid_size}) ...")
-agent = APSSPAgent(APSSPAgentConfig(max_iters=1000, tol=1e-3))
+agent = APSSPAgent(APSSPAgentConfig(max_iters=1000, rel_tol=1e-3))
 agent.plan(arena)
 print("Planning complete!")
 

@@ -107,7 +107,7 @@ def run_multi_target_viz():
     # 3. Plan once
     print("\nPlanning AP-SSP for all state-goal pairs …")
     agent = APSSPAgent(
-        APSSPAgentConfig(max_iters=200, tol=1e-3),
+        APSSPAgentConfig(max_iters=200, rel_tol=1e-3),
         num_actions=3,
         obs_shape=(3,),
     )

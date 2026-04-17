@@ -23,7 +23,8 @@ class APSSPAgentConfig(AgentConfig):
     """Configuration for the AP-SSP agent."""
 
     max_iters: int = 2000
-    tol: float = 1e-3
+    rel_tol: float = 1e-3
+    warmstart: bool = True
     debug: bool = False
 
 
@@ -36,7 +37,8 @@ def _ap_ssp_value_iteration_2d(
     z_max: int,
     boundary_mode: str,
     max_iters: int = 2000,
-    tol: float = 1e-3,
+    rel_tol: float = 1e-3,
+    H_init_warm: Optional[jnp.ndarray] = None,
     debug: bool = False,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Compute All-Pairs Stochastic Shortest Path (AP-SSP) tables for 2D.
@@ -73,9 +75,13 @@ def _ap_ssp_value_iteration_2d(
 
     reached_mask = dist <= vicinity_radius
 
-    # Initialize H. Reached states have 0 cost. Others have high cost.
+    # Initialize H. Reached states have 0 cost. Others have high cost,
+    # unless a warmstart H is provided — then reuse it (vicinity overrides).
     max_cost = 10000.0
-    H_init = jnp.where(reached_mask, 0.0, max_cost)
+    if H_init_warm is None:
+        H_init = jnp.where(reached_mask, 0.0, max_cost)
+    else:
+        H_init = jnp.where(reached_mask, 0.0, H_init_warm)
 
     u_offsets = jnp.arange(-d_max, d_max + 1)
     v_offsets = jnp.arange(-z_max, z_max + 1)
@@ -115,7 +121,7 @@ def _ap_ssp_value_iteration_2d(
         oob_mask = None
 
     def body_fn(val):
-        iter_count, H, _Pi, _max_diff = val
+        iter_count, H, _Pi, _abs_diff, _rel_diff = val
 
         H_lookup = H[idx_i, idx_j]
 
@@ -129,11 +135,22 @@ def _ap_ssp_value_iteration_2d(
         Pi_new = jnp.argmin(Q, axis=2).astype(jnp.int32)
 
         H_new = jnp.where(reached_mask, 0.0, H_new)
-        diff = jnp.max(jnp.abs(H - H_new)).astype(jnp.float32)
-        return (iter_count + 1, H_new, Pi_new, diff)
+        abs_diff = jnp.max(jnp.abs(H - H_new)).astype(jnp.float32)
+        # Denominator: max |H_new| over non-sentinel cells, so OOB
+        # max_cost cells don't deflate the relative error.
+        finite_mask = H_new < 0.99 * max_cost
+        denom = jnp.max(jnp.where(finite_mask, jnp.abs(H_new), 0.0)) + 1e-8
+        rel_diff = (abs_diff / denom).astype(jnp.float32)
+        return (iter_count + 1, H_new, Pi_new, abs_diff, rel_diff)
 
     Pi_init = jnp.zeros_like(H_init, dtype=jnp.int32)
-    init_val = (jnp.array(0), H_init, Pi_init, jnp.array(1e6, dtype=jnp.float32))
+    init_val = (
+        jnp.array(0),
+        H_init,
+        Pi_init,
+        jnp.array(1e6, dtype=jnp.float32),
+        jnp.array(1e6, dtype=jnp.float32),
+    )
 
     if debug:
         from tqdm import tqdm
@@ -141,23 +158,29 @@ def _ap_ssp_value_iteration_2d(
         step_fn = jax.jit(body_fn)
         val = init_val
         with tqdm(total=max_iters, desc="AP-SSP Value Iteration") as pbar:
-            while val[0] < max_iters and val[3] > tol:
+            while val[0] < max_iters and val[4] > rel_tol:
                 val = step_fn(val)
                 pbar.update(1)
-                pbar.set_postfix({"max_diff": f"{float(val[3]):.4f}"})
-        iters, H, Pi, max_diff = val
+                pbar.set_postfix(
+                    {"rel": f"{float(val[4]):.4g}", "abs": f"{float(val[3]):.4g}"}
+                )
+        iters, H, Pi, abs_diff, rel_diff = val
     else:
         @jax.jit
         def _solve(init_val):
             def cond_fn(val):
-                iter_count, _H, _Pi, max_diff = val
-                return (iter_count < max_iters) & (max_diff > tol)
+                iter_count, _H, _Pi, _abs_diff, rel_diff = val
+                return (iter_count < max_iters) & (rel_diff > rel_tol)
             return jax.lax.while_loop(cond_fn, body_fn, init_val)
 
-        iters, H, Pi, max_diff = _solve(init_val)
+        iters, H, Pi, abs_diff, rel_diff = _solve(init_val)
 
-    iters, max_diff = int(iters), float(max_diff)
-    print(f"AP-SSP converged in {iters} iters (max_diff={max_diff:.6f})")
+    iters = int(iters)
+    abs_diff = float(abs_diff)
+    rel_diff = float(rel_diff)
+    print(
+        f"AP-SSP converged in {iters} iters (rel={rel_diff:.4g}, abs={abs_diff:.4g})"
+    )
 
     return H, Pi
 
@@ -203,6 +226,17 @@ class APSSPAgent(Agent):
         vicinity_metric = getattr(arena, "vicinity_metric", "euclidean")
         boundary_mode = arena.boundary_mode
 
+        H_warm: Optional[jnp.ndarray] = None
+        if self.config.warmstart and self._cost_table is not None:
+            expected_shape = (cfg.n_x, cfg.n_y, cfg.n_x, cfg.n_y)
+            if self._cost_table.shape == expected_shape:
+                H_warm = jnp.asarray(self._cost_table)
+            else:
+                warnings.warn(
+                    f"Warmstart H shape {self._cost_table.shape} does not match "
+                    f"expected {expected_shape}; falling back to cold start."
+                )
+
         H, Pi = _ap_ssp_value_iteration_2d(
             field_pmf,
             actor_pmf,
@@ -212,7 +246,8 @@ class APSSPAgent(Agent):
             z_max,
             boundary_mode,
             max_iters=self.config.max_iters,
-            tol=self.config.tol,
+            rel_tol=self.config.rel_tol,
+            H_init_warm=H_warm,
             debug=self.config.debug,
         )
         self._cost_table = np.array(H)

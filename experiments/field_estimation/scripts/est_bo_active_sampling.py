@@ -124,7 +124,7 @@ assert jnp.array_equal(true_u, field._precomputed_u.squeeze()), (
 )
 
 # Create agent (planning deferred to inside the loop)
-agent = APSSPAgent(APSSPAgentConfig(max_iters=200, tol=1e-3))
+agent = APSSPAgent(APSSPAgentConfig(max_iters=200, rel_tol=1e-3))
 
 # %%
 # 2. Setup Full GP Test Grid for predictions
