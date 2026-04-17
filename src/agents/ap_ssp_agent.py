@@ -77,7 +77,7 @@ def _ap_ssp_value_iteration_2d(
 
     # Initialize H. Reached states have 0 cost. Others have high cost,
     # unless a warmstart H is provided — then reuse it (vicinity overrides).
-    max_cost = 10000.0
+    max_cost = n_x * n_y
     if H_init_warm is None:
         H_init = jnp.where(reached_mask, 0.0, max_cost)
     else:
@@ -166,11 +166,13 @@ def _ap_ssp_value_iteration_2d(
                 )
         iters, H, Pi, abs_diff, rel_diff = val
     else:
+
         @jax.jit
         def _solve(init_val):
             def cond_fn(val):
                 iter_count, _H, _Pi, _abs_diff, rel_diff = val
                 return (iter_count < max_iters) & (rel_diff > rel_tol)
+
             return jax.lax.while_loop(cond_fn, body_fn, init_val)
 
         iters, H, Pi, abs_diff, rel_diff = _solve(init_val)
@@ -178,9 +180,7 @@ def _ap_ssp_value_iteration_2d(
     iters = int(iters)
     abs_diff = float(abs_diff)
     rel_diff = float(rel_diff)
-    print(
-        f"AP-SSP converged in {iters} iters (rel={rel_diff:.4g}, abs={abs_diff:.4g})"
-    )
+    print(f"AP-SSP converged in {iters} iters (rel={rel_diff:.4g}, abs={abs_diff:.4g})")
 
     return H, Pi
 
