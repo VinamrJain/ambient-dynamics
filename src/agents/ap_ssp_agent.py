@@ -26,6 +26,10 @@ class APSSPAgentConfig(AgentConfig):
     rel_tol: float = 1e-3
     warmstart: bool = True
     debug: bool = False
+    #: Finite penalty for transitions that leave the grid (terminal mode) and
+    #: initial cost for unreachable states. If ``None``, uses ``n_x * n_y`` from
+    #: the arena grid at ``plan()`` time (must exceed optimal H for correctness).
+    oob_penalty_max: Optional[float] = None
 
 
 def _ap_ssp_value_iteration_2d(
@@ -36,19 +40,30 @@ def _ap_ssp_value_iteration_2d(
     d_max: int,
     z_max: int,
     boundary_mode: str,
+    max_cost: float,
     max_iters: int = 2000,
     rel_tol: float = 1e-3,
     H_init_warm: Optional[jnp.ndarray] = None,
     debug: bool = False,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, int]:
     """Compute All-Pairs Stochastic Shortest Path (AP-SSP) tables for 2D.
+
+    Parameters
+    ----------
+    max_cost : float
+    max_iters : int
+    rel_tol : float
+    H_init_warm : Optional[jnp.ndarray]
+    debug : bool
 
     Returns
     -------
     H : jnp.ndarray shape (n_x, n_y, n_x, n_y)
         Expected Cost (number of steps).
     Pi : jnp.ndarray shape (n_x, n_y, n_x, n_y)
-        Optimal policy.
+        Optimal policy (action index; stay=1 in goal vicinity).
+    iters : int
+        Number of value-iteration sweeps performed.
     """
     n_x, n_y, _ = field_pmf.shape
 
@@ -77,7 +92,6 @@ def _ap_ssp_value_iteration_2d(
 
     # Initialize H. Reached states have 0 cost. Others have high cost,
     # unless a warmstart H is provided — then reuse it (vicinity overrides).
-    max_cost = n_x * n_y
     if H_init_warm is None:
         H_init = jnp.where(reached_mask, 0.0, max_cost)
     else:
@@ -133,6 +147,8 @@ def _ap_ssp_value_iteration_2d(
 
         H_new = jnp.min(Q, axis=2)
         Pi_new = jnp.argmin(Q, axis=2).astype(jnp.int32)
+        # In vicinity of goal, prefer stay (action 1) to avoid drift when not terminating on reach.
+        Pi_new = jnp.where(reached_mask, jnp.int32(1), Pi_new)
 
         H_new = jnp.where(reached_mask, 0.0, H_new)
         abs_diff = jnp.max(jnp.abs(H - H_new)).astype(jnp.float32)
@@ -182,7 +198,7 @@ def _ap_ssp_value_iteration_2d(
     rel_diff = float(rel_diff)
     print(f"AP-SSP converged in {iters} iters (rel={rel_diff:.4g}, abs={abs_diff:.4g})")
 
-    return H, Pi
+    return H, Pi, iters
 
 
 class APSSPAgent(Agent):
@@ -202,6 +218,8 @@ class APSSPAgent(Agent):
         self._policy_table: Optional[jnp.ndarray] = None
         self._ndim: Optional[int] = None
         self.target_position: Optional[GridPosition] = None
+        self.last_value_iteration_iters: Optional[int] = None
+        self.oob_penalty_max: Optional[float] = None
 
     def prepare_episode(self, env) -> None:
         """Run batch value iteration for the current field."""
@@ -237,7 +255,19 @@ class APSSPAgent(Agent):
                     f"expected {expected_shape}; falling back to cold start."
                 )
 
-        H, Pi = _ap_ssp_value_iteration_2d(
+        resolved_max = self.config.oob_penalty_max
+        if resolved_max is None:
+            resolved_max = float(cfg.n_x * cfg.n_y)
+        else:
+            resolved_max = float(resolved_max)
+            if resolved_max <= 0.0:
+                raise ValueError(
+                    f"oob_penalty_max must be positive, got {resolved_max}"
+                )
+
+        self.oob_penalty_max = resolved_max
+
+        H, Pi, vi_iters = _ap_ssp_value_iteration_2d(
             field_pmf,
             actor_pmf,
             vicinity_radius,
@@ -245,6 +275,7 @@ class APSSPAgent(Agent):
             d_max,
             z_max,
             boundary_mode,
+            resolved_max,
             max_iters=self.config.max_iters,
             rel_tol=self.config.rel_tol,
             H_init_warm=H_warm,
@@ -252,6 +283,7 @@ class APSSPAgent(Agent):
         )
         self._cost_table = np.array(H)
         self._policy_table = np.array(Pi)
+        self.last_value_iteration_iters = int(vi_iters)
 
     def get_expected_cost(self, pos: GridPosition, target: GridPosition) -> float:
         """Look up the expected cost to reach target from pos."""
