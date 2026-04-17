@@ -123,15 +123,29 @@ assert jnp.array_equal(true_u, field._precomputed_u.squeeze()), (
     "Field was re-sampled unexpectedly!"
 )
 
+ap_ssp_oob_penalty_max = grid_size * grid_size
+
 # Create agent (planning deferred to inside the loop)
-agent = APSSPAgent(APSSPAgentConfig(max_iters=200, rel_tol=1e-3))
+agent = APSSPAgent(
+    APSSPAgentConfig(
+        max_iters=200, rel_tol=1e-3, oob_penalty_max=ap_ssp_oob_penalty_max
+    )
+)
 
 # Plan once on the true field to obtain H_true for policy-quality diagnostics.
 print("Planning AP-SSP on true field for H_true reference ...")
 true_agent = APSSPAgent(
-    APSSPAgentConfig(max_iters=200, rel_tol=1e-4, warmstart=False, debug=True)
+    APSSPAgentConfig(
+        max_iters=200,
+        rel_tol=1e-4,
+        warmstart=False,
+        debug=True,
+        oob_penalty_max=ap_ssp_oob_penalty_max,
+    )
 )
 true_agent.plan(arena)
+oob_penalty_max = true_agent.oob_penalty_max
+assert oob_penalty_max is not None
 H_true = jnp.asarray(true_agent._cost_table)
 
 # %%
@@ -262,10 +276,11 @@ def thompson_acq(mu_flat, var_flat, key):
 # %%
 # 4. Planning Helper — Estimated Arena via Deepcopy
 # ==================================================
-def h_rmse(
-    H_est, H_true, margin=0, max_cost=grid_size * grid_size
-):  # TODO: Hardcoded max cost
-    """RMSE between two AP-SSP H-tables, excluding sentinel (OOB) cells."""
+def h_rmse(H_est, H_true, margin=0, max_cost=oob_penalty_max):
+    """RMSE between two AP-SSP H-tables, excluding sentinel (OOB) cells.
+
+    Cells with H >= 0.99 * max_cost are treated as OOB sentinels and ignored.
+    """
     if margin > 0:
         sub = (slice(margin, -margin),) * 4
         H_est = H_est[sub]
@@ -375,7 +390,8 @@ def run_trajectory_loops(
             arena.set_position(initial_pos)
 
     rmse_history = []
-    h_rmse_history = []  # (n_samples, rmse_full, rmse_sub)
+    # (n_samples, rmse_full, rmse_sub, vi_iters after each GP update / re-plan)
+    h_rmse_history = []
     loop_idx = 1
     targets_attempted = 0
     targets_reached = 0
@@ -403,6 +419,7 @@ def run_trajectory_loops(
                 len(X_obs),
                 h_rmse(H_est, H_true, margin=0),
                 h_rmse(H_est, H_true, margin=margin),
+                int(agent.last_value_iteration_iters or 0),
             )
         )
 
@@ -605,9 +622,11 @@ os.makedirs(f"{SCRIPT_DIR}/plots/est_bo_active", exist_ok=True)
 
 plt.rcParams.update(
     {
-        "font.size": 10,
-        "axes.titlesize": 11,
-        "axes.labelsize": 10,
+        "font.size": 12,
+        "axes.titlesize": 14,
+        "axes.labelsize": 14,
+        "legend.fontsize": 12,
+        "figure.facecolor": "white",
     }
 )
 
@@ -625,13 +644,13 @@ _cx = np.arange(1, grid_size + 1)
 _cy = np.arange(1, grid_size + 1)
 
 
-def _add_subgrid_rect(ax, edgecolor="white"):
+def _add_subgrid_rect(ax, edgecolor="blue"):
     ax.add_patch(
         patches.Rectangle(
             (margin + 0.5, margin + 0.5),
             subgrid_size,
             subgrid_size,
-            linewidth=1.5,
+            linewidth=2,
             edgecolor=edgecolor,
             facecolor="none",
             linestyle="--",
@@ -667,7 +686,13 @@ if eval_alpha is not None:
 else:
     axes[0, 2].axis("off")
 
-axes[0, 3].axis("off")
+cost_from_center = true_agent._cost_table[initial_pos.i - 1, initial_pos.j - 1, :, :]
+im0_h = axes[0, 3].imshow(
+    cost_from_center.T, origin="lower", cmap="hot", extent=_extent
+)
+axes[0, 3].set_title(f"H (true field) from center ({initial_pos.i},{initial_pos.j})")
+_add_subgrid_rect(axes[0, 3], edgecolor="cyan")
+plt.colorbar(im0_h, ax=axes[0, 3])
 
 # Rows 1-5: Per-strategy
 for i, strat in enumerate(strategies):
@@ -690,7 +715,7 @@ for i, strat in enumerate(strategies):
             linestyles="--",
         )
     _add_subgrid_rect(axes[r, 0])
-    axes[r, 0].set_title(f"{labels[i]}: Predicted Mean  ({len(X_tr)} samples)")
+    axes[r, 0].set_title(f"{labels[i]}: Predicted Mean  \n({len(X_tr)} samples)")
     plt.colorbar(im_m, ax=axes[r, 0])
 
     # Col 1: Absolute error + true level set contour
@@ -820,48 +845,73 @@ print(f"Saved metrics dashboard to {dashboard_path}")
 plt.show()
 
 # %%
-# Figure 3: H-RMSE vs Sample Count
-# =================================
-fig_h, axes_h = plt.subplots(1, 2, figsize=(14, 6))
+# Figure 3: H-RMSE vs Sample Count + AP-SSP VI iterations after each re-plan
+# ===========================================================================
+fig_h, axes_h = plt.subplots(1, 3, figsize=(16, 4.8))
 
+lines_for_legend = []
 for i, strat in enumerate(strategies):
     h_hist = results[strat][7]
     xs = [h[0] for h in h_hist]
     ys_full = [h[1] for h in h_hist]
     ys_sub = [h[2] for h in h_hist]
-    axes_h[0].plot(
+    ys_vi = [h[3] for h in h_hist]
+    (ln0,) = axes_h[0].plot(
         xs,
         ys_full,
         marker=markers[i],
         color=colors[i],
         label=labels[i],
-        linewidth=2,
-        markevery=5,
+        linewidth=1.85,
+        markevery=max(1, len(xs) // 15),
+        alpha=0.95,
     )
     axes_h[1].plot(
         xs,
         ys_sub,
         marker=markers[i],
         color=colors[i],
-        label=labels[i],
-        linewidth=2,
-        markevery=5,
+        linewidth=1.85,
+        markevery=max(1, len(xs) // 15),
+        alpha=0.95,
     )
+    axes_h[2].plot(
+        xs,
+        ys_vi,
+        marker=markers[i],
+        color=colors[i],
+        linewidth=1.85,
+        markevery=max(1, len(xs) // 15),
+        alpha=0.95,
+    )
+    lines_for_legend.append(ln0)
 
-axes_h[0].set_xlabel("Total Samples")
-axes_h[0].set_ylabel("RMSE(H_est, H_true)")
-axes_h[0].set_title("H-RMSE — Full Grid")
-axes_h[0].legend()
-axes_h[0].grid(True, linestyle="--", alpha=0.5)
+axes_h[0].set_xlabel("Total samples (at GP update)")
+axes_h[0].set_ylabel(r"RMSE$(H_{\mathrm{est}}, H_{\mathrm{true}})$")
+axes_h[0].set_title("H-table error — full grid")
 
-axes_h[1].set_xlabel("Total Samples")
-axes_h[1].set_ylabel("RMSE(H_est, H_true)")
-axes_h[1].set_title(f"H-RMSE — Subgrid (margin={margin})")
-axes_h[1].legend()
-axes_h[1].grid(True, linestyle="--", alpha=0.5)
 
-plt.tight_layout()
+axes_h[1].set_xlabel("Total samples (at GP update)")
+axes_h[1].set_ylabel(r"RMSE$(H_{\mathrm{est}}, H_{\mathrm{true}})$")
+axes_h[1].set_title(f"H-table error — subgrid (margin = {margin})")
+
+
+axes_h[2].set_xlabel("Total samples (at GP update)")
+axes_h[2].set_ylabel("Value-iteration sweeps")
+axes_h[2].set_title("AP-SSP iterations (after each GP fit)")
+
+fig_h.legend(
+    lines_for_legend,
+    labels,
+    loc="upper center",
+    ncol=min(5, len(labels)),
+    frameon=True,
+    framealpha=0.92,
+    bbox_to_anchor=(0.5, -0.02),
+    fontsize=9,
+)
+fig_h.tight_layout(rect=[0, 0.12, 1, 1])
 h_rmse_path = f"{SCRIPT_DIR}/plots/est_bo_active/bo_h_rmse_scaling.png"
-plt.savefig(h_rmse_path, dpi=150)
+plt.savefig(h_rmse_path, dpi=150, bbox_inches="tight")
 print(f"Saved H-RMSE scaling plot to {h_rmse_path}")
 plt.show()
