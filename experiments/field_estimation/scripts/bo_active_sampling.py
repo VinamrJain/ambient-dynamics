@@ -16,6 +16,7 @@
 
 # %%
 """Bayesian Optimization Active Sampling with AP-SSP Planning."""
+
 # %load_ext autoreload
 # %autoreload 2
 import jax
@@ -28,6 +29,7 @@ import matplotlib.patches as patches
 import numpy as np
 import gpjax as gpx
 import optax as ox
+import argparse
 import sys
 import os
 from pathlib import Path
@@ -40,14 +42,29 @@ def add_project_root_to_path() -> Path:
             break
         parent = project_root.parent
         if parent == project_root:
-            raise FileNotFoundError("Project root (directory with src/ and pixi.toml) not found.")
+            raise FileNotFoundError(
+                "Project root (directory with src/ and pixi.toml) not found."
+            )
         project_root = parent
     root_str = str(project_root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
     return project_root
 
+
 add_project_root_to_path()
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+_parser = argparse.ArgumentParser()
+_parser.add_argument(
+    "-n",
+    "--name",
+    default="default",
+    help="Subdirectory under plots/bo_active/ for this run's outputs.",
+)
+_args, _ = _parser.parse_known_args()
+RUN_NAME = Path(_args.name).name or "default"
+PLOT_RUN_DIR = SCRIPT_DIR / "plots" / "bo_active" / RUN_NAME
 
 from src.env.field.rff_gp_field import RFFGPField
 from src.env.actor.grid_actor import GridActor
@@ -113,12 +130,14 @@ key, reset_key = jr.split(key)
 arena.reset(reset_key)
 true_u = field._precomputed_u.squeeze()
 true_u_subgrid = true_u[margin:-margin, margin:-margin]
-assert jnp.array_equal(true_u, field._precomputed_u.squeeze()), "Field was re-sampled unexpectedly!"
+assert jnp.array_equal(true_u, field._precomputed_u.squeeze()), (
+    "Field was re-sampled unexpectedly!"
+)
 
 # %%
 # Plan AP-SSP
 print(f"Planning AP-SSP for all state-goal pairs ({grid_size}x{grid_size}) ...")
-agent = APSSPAgent(APSSPAgentConfig(max_iters=1000, rel_tol=1e-3))
+agent = APSSPAgent(APSSPAgentConfig(max_iters=500, rel_tol=1e-3))
 agent.plan(arena)
 print("Planning complete!")
 
@@ -178,6 +197,7 @@ def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None, init_params=None):
 
     learned_params = None
     if optimize:
+
         def nmll(p, d):
             return -gpx.objectives.conjugate_mll(p, d)
 
@@ -208,7 +228,9 @@ def evaluate_gp(X_tr, y_tr, optimize=False, alpha=None, init_params=None):
     mu_flat_sub = mu_subgrid.ravel()
 
     rmse_dict = {
-        "rmse_full_grid": float(jnp.sqrt(jnp.mean((true_u_flat_full - mu_flat_full) ** 2))),
+        "rmse_full_grid": float(
+            jnp.sqrt(jnp.mean((true_u_flat_full - mu_flat_full) ** 2))
+        ),
         "rmse_subgrid": float(jnp.sqrt(jnp.mean((true_u_flat_sub - mu_flat_sub) ** 2))),
     }
 
@@ -247,7 +269,13 @@ def thompson_acq(mu_flat, var_flat, key):
 # 3. Trajectory Loop Function
 # ===========================
 def run_trajectory_loops(
-    acq_type, strategy_key, max_total_samples=150, max_steps_per_loop=30, alpha=None, gif_path=None, optimize=True
+    acq_type,
+    strategy_key,
+    max_total_samples=150,
+    max_steps_per_loop=30,
+    alpha=None,
+    gif_path=None,
+    optimize=True,
 ):
     key = strategy_key
     print(f"\n--- Running Strategy: {acq_type} ---")
@@ -284,7 +312,9 @@ def run_trajectory_loops(
 
     # Regret for initial sample
     _pi, _pj = initial_pos.i, initial_pos.j
-    if (margin + 1 <= _pi <= margin + subgrid_size) and (margin + 1 <= _pj <= margin + subgrid_size):
+    if (margin + 1 <= _pi <= margin + subgrid_size) and (
+        margin + 1 <= _pj <= margin + subgrid_size
+    ):
         _val = float(jnp.abs(true_u[_pi - 1, _pj - 1]))
         max_observed_abs = max(max_observed_abs, _val)
         cumulative_regret += f_star - _val
@@ -392,11 +422,15 @@ def run_trajectory_loops(
 
             # Track regret (subgrid observations only)
             _pi, _pj = state.last_position.i, state.last_position.j
-            if (margin + 1 <= _pi <= margin + subgrid_size) and (margin + 1 <= _pj <= margin + subgrid_size):
+            if (margin + 1 <= _pi <= margin + subgrid_size) and (
+                margin + 1 <= _pj <= margin + subgrid_size
+            ):
                 _val = float(jnp.abs(true_u[_pi - 1, _pj - 1]))
                 max_observed_abs = max(max_observed_abs, _val)
                 cumulative_regret += f_star - _val
-            regret_history.append((len(X_obs), cumulative_regret, f_star - max_observed_abs))
+            regret_history.append(
+                (len(X_obs), cumulative_regret, f_star - max_observed_abs)
+            )
 
             if state.target_reached:
                 targets_reached += 1
@@ -435,24 +469,32 @@ def run_trajectory_loops(
         f" | RMSE(subgrid): {rmse_dict['rmse_subgrid']:.4f}"
         f" | Cum. Regret: {cumulative_regret:.2f}"
     )
-    return mu, var, X_tr, y_tr, rmse_history, (targets_reached, targets_attempted), regret_history
+    return (
+        mu,
+        var,
+        X_tr,
+        y_tr,
+        rmse_history,
+        (targets_reached, targets_attempted),
+        regret_history,
+    )
 
 
 # %%
 # 4. Run Experiments
 # ==================
-max_total_samples = 150
-max_steps_per_loop = 30
-eval_alpha = 2.0  # Set to a threshold to estimate level sets, or None for whole subgrid
+max_total_samples = 500
+max_steps_per_loop = 50
+eval_alpha = 6.0  # Set to a threshold to estimate level sets, or None for whole subgrid
 
 results = {}
 strategies = ["random", "max_variance", "ei", "cost_aware_ei", "thompson"]
 labels = ["Random Target", "Max Variance", "EI", "Cost-Aware EI", "Thompson"]
 
-os.makedirs("plots/bo_active", exist_ok=True)
+PLOT_RUN_DIR.mkdir(parents=True, exist_ok=True)
 for idx, strat in enumerate(strategies):
     strategy_key = jr.fold_in(jr.PRNGKey(seed), idx)
-    gif_path = f"plots/bo_active/trajectory_{strat}.gif"
+    gif_path = str(PLOT_RUN_DIR / f"trajectory_{strat}.gif")
     results[strat] = run_trajectory_loops(
         strat,
         strategy_key=strategy_key,
@@ -460,12 +502,14 @@ for idx, strat in enumerate(strategies):
         max_steps_per_loop=max_steps_per_loop,
         alpha=eval_alpha,
         gif_path=gif_path,
-        optimize=True
+        optimize=False,
     )
 
 # Print comparison table
 print("\n=== Strategy Comparison ===")
-print(f"{'Strategy':<30} {'Samples':>8} {'Reach':>12} {'RMSE(grid)':>12} {'RMSE(sub)':>12} {'RMSE(lvl)':>12} {'Cum.Regret':>12} {'Simp.Regret':>12}")
+print(
+    f"{'Strategy':<30} {'Samples':>8} {'Reach':>12} {'RMSE(grid)':>12} {'RMSE(sub)':>12} {'RMSE(lvl)':>12} {'Cum.Regret':>12} {'Simp.Regret':>12}"
+)
 print("-" * 118)
 for strat, label in zip(strategies, labels):
     _, _, X_tr, _, rmse_hist, reach_info, regret_hist = results[strat]
@@ -484,28 +528,42 @@ for strat, label in zip(strategies, labels):
 # %%
 # 5. Plotting
 # ===========
-os.makedirs("plots/bo_active", exist_ok=True)
+PLOT_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
-plt.rcParams.update({
-    "font.size": 10,
-    "axes.titlesize": 11,
-    "axes.labelsize": 10,
-})
+plt.rcParams.update(
+    {
+        "font.size": 10,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+    }
+)
 
 colors = ["b", "g", "r", "purple", "orange"]
 markers = ["o", "s", "^", "D", "v"]
 
 _extent = [0.5, grid_size + 0.5, 0.5, grid_size + 0.5]
-_sub_extent = [margin + 0.5, margin + subgrid_size + 0.5, margin + 0.5, margin + subgrid_size + 0.5]
+_sub_extent = [
+    margin + 0.5,
+    margin + subgrid_size + 0.5,
+    margin + 0.5,
+    margin + subgrid_size + 0.5,
+]
 _cx = np.arange(1, grid_size + 1)
 _cy = np.arange(1, grid_size + 1)
 
 
 def _add_subgrid_rect(ax, edgecolor="white"):
-    ax.add_patch(patches.Rectangle(
-        (margin + 0.5, margin + 0.5), subgrid_size, subgrid_size,
-        linewidth=1.5, edgecolor=edgecolor, facecolor="none", linestyle="--",
-    ))
+    ax.add_patch(
+        patches.Rectangle(
+            (margin + 0.5, margin + 0.5),
+            subgrid_size,
+            subgrid_size,
+            linewidth=1.5,
+            edgecolor=edgecolor,
+            facecolor="none",
+            linestyle="--",
+        )
+    )
 
 
 # %%
@@ -519,21 +577,27 @@ axes[0, 0].set_title("True Field")
 _add_subgrid_rect(axes[0, 0], edgecolor="black")
 plt.colorbar(im0, ax=axes[0, 0])
 
-im0_mag = axes[0, 1].imshow(jnp.abs(true_u).T, origin="lower", cmap="viridis", extent=_extent)
+im0_mag = axes[0, 1].imshow(
+    jnp.abs(true_u).T, origin="lower", cmap="viridis", extent=_extent
+)
 axes[0, 1].set_title("True Field Magnitude (|u|)")
 _add_subgrid_rect(axes[0, 1], edgecolor="black")
 plt.colorbar(im0_mag, ax=axes[0, 1])
 
 if eval_alpha is not None:
     mask_plot = (jnp.abs(true_u) > eval_alpha).astype(float)
-    im0_mask = axes[0, 2].imshow(mask_plot.T, origin="lower", cmap="gray", extent=_extent)
+    im0_mask = axes[0, 2].imshow(
+        mask_plot.T, origin="lower", cmap="gray", extent=_extent
+    )
     axes[0, 2].set_title(f"True Level Set (|u| > {eval_alpha})")
     _add_subgrid_rect(axes[0, 2], edgecolor="red")
 else:
     axes[0, 2].axis("off")
 
 cost_from_center = agent._cost_table[initial_pos.i - 1, initial_pos.j - 1, :, :]
-im0_h = axes[0, 3].imshow(cost_from_center.T, origin="lower", cmap="hot", extent=_extent)
+im0_h = axes[0, 3].imshow(
+    cost_from_center.T, origin="lower", cmap="hot", extent=_extent
+)
 axes[0, 3].set_title(f"H Cost from Center ({initial_pos.i},{initial_pos.j})")
 _add_subgrid_rect(axes[0, 3], edgecolor="cyan")
 plt.colorbar(im0_h, ax=axes[0, 3])
@@ -549,8 +613,15 @@ for i, strat in enumerate(strategies):
     axes[r, 0].plot(X_tr[:, 0], X_tr[:, 1], color="white", alpha=0.4, linewidth=0.8)
     axes[r, 0].scatter(X_tr[:, 0], X_tr[:, 1], c="red", s=8, edgecolors="none")
     if eval_alpha is not None:
-        axes[r, 0].contour(_cx, _cy, jnp.abs(mu).T, levels=[eval_alpha],
-                           colors="yellow", linewidths=1.5, linestyles="--")
+        axes[r, 0].contour(
+            _cx,
+            _cy,
+            jnp.abs(mu).T,
+            levels=[eval_alpha],
+            colors="yellow",
+            linewidths=1.5,
+            linestyles="--",
+        )
     _add_subgrid_rect(axes[r, 0])
     axes[r, 0].set_title(f"{labels[i]}: Predicted Mean  ({len(X_tr)} samples)")
     plt.colorbar(im_m, ax=axes[r, 0])
@@ -559,8 +630,15 @@ for i, strat in enumerate(strategies):
     err = jnp.abs(true_u - mu)
     im_e = axes[r, 1].imshow(err.T, origin="lower", cmap="Reds", extent=_extent)
     if eval_alpha is not None:
-        axes[r, 1].contour(_cx, _cy, jnp.abs(true_u).T, levels=[eval_alpha],
-                           colors="black", linewidths=1.5, linestyles="--")
+        axes[r, 1].contour(
+            _cx,
+            _cy,
+            jnp.abs(true_u).T,
+            levels=[eval_alpha],
+            colors="black",
+            linewidths=1.5,
+            linestyles="--",
+        )
     title_rmse = f"RMSE(sub): {final_rd['rmse_subgrid']:.3f}"
     if eval_alpha is not None and "rmse_subgrid_levelset" in final_rd:
         title_rmse += f"  lvl: {final_rd['rmse_subgrid_levelset']:.3f}"
@@ -575,18 +653,25 @@ for i, strat in enumerate(strategies):
     plt.colorbar(im_v, ax=axes[r, 2])
 
     # Col 3: Sample scatter on subgrid true field
-    im_f = axes[r, 3].imshow(true_u_subgrid.T, origin="lower", cmap="viridis", extent=_sub_extent)
-    in_sub = (
-        (X_tr[:, 0] >= margin + 1) & (X_tr[:, 0] <= margin + subgrid_size)
-        & (X_tr[:, 1] >= margin + 1) & (X_tr[:, 1] <= margin + subgrid_size)
+    im_f = axes[r, 3].imshow(
+        true_u_subgrid.T, origin="lower", cmap="viridis", extent=_sub_extent
     )
-    axes[r, 3].scatter(X_tr[in_sub, 0], X_tr[in_sub, 1], c="red", s=12,
-                       edgecolors="k", linewidths=0.4)
-    axes[r, 3].set_title(f"{labels[i]}: Subgrid Samples\n({int(in_sub.sum())}/{len(X_tr)} in subgrid)")
+    in_sub = (
+        (X_tr[:, 0] >= margin + 1)
+        & (X_tr[:, 0] <= margin + subgrid_size)
+        & (X_tr[:, 1] >= margin + 1)
+        & (X_tr[:, 1] <= margin + subgrid_size)
+    )
+    axes[r, 3].scatter(
+        X_tr[in_sub, 0], X_tr[in_sub, 1], c="red", s=12, edgecolors="k", linewidths=0.4
+    )
+    axes[r, 3].set_title(
+        f"{labels[i]}: Subgrid Samples\n({int(in_sub.sum())}/{len(X_tr)} in subgrid)"
+    )
     plt.colorbar(im_f, ax=axes[r, 3])
 
 plt.tight_layout()
-posteriors_path = "plots/bo_active/bo_posteriors.png"
+posteriors_path = PLOT_RUN_DIR / "bo_posteriors.png"
 plt.savefig(posteriors_path, dpi=150)
 print(f"Saved posteriors plot to {posteriors_path}")
 plt.show()
@@ -608,8 +693,15 @@ for col, (rkey, rtitle) in enumerate(zip(rmse_keys, rmse_titles)):
         rmse_hist = results[strat][4]
         xs = [x[0] for x in rmse_hist]
         ys = [x[1][rkey] for x in rmse_hist]
-        ax.plot(xs, ys, marker=markers[i], color=colors[i], label=labels[i],
-                linewidth=2, markevery=10)
+        ax.plot(
+            xs,
+            ys,
+            marker=markers[i],
+            color=colors[i],
+            label=labels[i],
+            linewidth=2,
+            markevery=10,
+        )
     ax.set_xlabel("Total Samples")
     ax.set_ylabel(rtitle)
     ax.set_title(rtitle)
@@ -621,10 +713,24 @@ for i, strat in enumerate(strategies):
     xs = [r[0] for r in regret_hist]
     cum_ys = [r[1] for r in regret_hist]
     simp_ys = [r[2] for r in regret_hist]
-    axes_dash[1, 0].plot(xs, cum_ys, marker=markers[i], color=colors[i], label=labels[i],
-                         linewidth=2, markevery=10)
-    axes_dash[1, 1].plot(xs, simp_ys, marker=markers[i], color=colors[i], label=labels[i],
-                         linewidth=2, markevery=10)
+    axes_dash[1, 0].plot(
+        xs,
+        cum_ys,
+        marker=markers[i],
+        color=colors[i],
+        label=labels[i],
+        linewidth=2,
+        markevery=10,
+    )
+    axes_dash[1, 1].plot(
+        xs,
+        simp_ys,
+        marker=markers[i],
+        color=colors[i],
+        label=labels[i],
+        linewidth=2,
+        markevery=10,
+    )
 
 axes_dash[1, 0].set_xlabel("Total Samples")
 axes_dash[1, 0].set_ylabel("Cumulative Regret")
@@ -641,7 +747,7 @@ axes_dash[1, 1].grid(True, linestyle="--", alpha=0.5)
 axes_dash[1, 2].axis("off")
 
 plt.tight_layout()
-dashboard_path = "plots/bo_active/bo_metrics_dashboard.png"
+dashboard_path = PLOT_RUN_DIR / "bo_metrics_dashboard.png"
 plt.savefig(dashboard_path, dpi=150)
 print(f"Saved metrics dashboard to {dashboard_path}")
 plt.show()

@@ -30,6 +30,7 @@ import matplotlib.patches as patches
 import numpy as np
 import gpjax as gpx
 import optax as ox
+import argparse
 import sys
 import os
 from pathlib import Path
@@ -53,6 +54,16 @@ def add_project_root_to_path() -> Path:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+_parser = argparse.ArgumentParser()
+_parser.add_argument(
+    "-n",
+    "--name",
+    default="default",
+    help="Subdirectory under plots/est_bo_active/ for this run's outputs.",
+)
+_args, _ = _parser.parse_known_args()
+RUN_NAME = Path(_args.name).name or "default"
+PLOT_RUN_DIR = SCRIPT_DIR / "plots" / "est_bo_active" / RUN_NAME
 add_project_root_to_path()
 
 from src.env.field.rff_gp_field import RFFGPField
@@ -69,7 +80,7 @@ config.update("jax_enable_x64", True)
 # 1. Setup True Field and Arena
 # =============================
 grid_size = 50
-subgrid_size = 15
+subgrid_size = 20
 margin = (grid_size - subgrid_size) // 2
 
 sigma_true = 3.0
@@ -571,19 +582,19 @@ def run_trajectory_loops(
 # %%
 # 6. Run Experiments
 # ==================
-m_random = 50
-max_total_samples = 500
-max_steps_per_loop = 30
-eval_alpha = 5.0  # Set to a threshold to estimate level sets, or None for whole subgrid
+m_random = 30
+max_total_samples = 150
+max_steps_per_loop = 50
+eval_alpha = 6.0  # Set to a threshold to estimate level sets, or None for whole subgrid
 
 results = {}
 strategies = ["random", "max_variance", "ei", "cost_aware_ei", "thompson"]
 labels = ["Random Target", "Max Variance", "EI", "Cost-Aware EI", "Thompson"]
 
-os.makedirs(f"{SCRIPT_DIR}/plots/est_bo_active", exist_ok=True)
+PLOT_RUN_DIR.mkdir(parents=True, exist_ok=True)
 for idx, strat in enumerate(strategies):
     strategy_key = jr.fold_in(jr.PRNGKey(seed), idx)
-    gif_path = f"{SCRIPT_DIR}/plots/est_bo_active/trajectory_{strat}.gif"
+    gif_path = str(PLOT_RUN_DIR / f"trajectory_{strat}.gif")
     results[strat] = run_trajectory_loops(
         strat,
         strategy_key=strategy_key,
@@ -618,7 +629,7 @@ for strat, label in zip(strategies, labels):
 # %%
 # 7. Plotting
 # ===========
-os.makedirs(f"{SCRIPT_DIR}/plots/est_bo_active", exist_ok=True)
+PLOT_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 plt.rcParams.update(
     {
@@ -763,7 +774,7 @@ for i, strat in enumerate(strategies):
     plt.colorbar(im_f, ax=axes[r, 3])
 
 plt.tight_layout()
-posteriors_path = f"{SCRIPT_DIR}/plots/est_bo_active/bo_posteriors.png"
+posteriors_path = PLOT_RUN_DIR / "bo_posteriors.png"
 plt.savefig(posteriors_path, dpi=150)
 print(f"Saved posteriors plot to {posteriors_path}")
 plt.show()
@@ -839,7 +850,7 @@ axes_dash[1, 1].grid(True, linestyle="--", alpha=0.5)
 axes_dash[1, 2].axis("off")
 
 plt.tight_layout()
-dashboard_path = f"{SCRIPT_DIR}/plots/est_bo_active/bo_metrics_dashboard.png"
+dashboard_path = PLOT_RUN_DIR / "bo_metrics_dashboard.png"
 plt.savefig(dashboard_path, dpi=150)
 print(f"Saved metrics dashboard to {dashboard_path}")
 plt.show()
@@ -893,7 +904,7 @@ axes_h[0].set_title("H-table error — full grid")
 
 axes_h[1].set_xlabel("Total samples (at GP update)")
 axes_h[1].set_ylabel(r"RMSE$(H_{\mathrm{est}}, H_{\mathrm{true}})$")
-axes_h[1].set_title(f"H-table error — subgrid (margin = {margin})")
+axes_h[1].set_title(f"H-table error — subgrid ({subgrid_size}x{subgrid_size})")
 
 
 axes_h[2].set_xlabel("Total samples (at GP update)")
@@ -911,7 +922,7 @@ fig_h.legend(
     fontsize=9,
 )
 fig_h.tight_layout(rect=[0, 0.12, 1, 1])
-h_rmse_path = f"{SCRIPT_DIR}/plots/est_bo_active/bo_h_rmse_scaling.png"
+h_rmse_path = PLOT_RUN_DIR / "bo_h_rmse_scaling.png"
 plt.savefig(h_rmse_path, dpi=150, bbox_inches="tight")
 print(f"Saved H-RMSE scaling plot to {h_rmse_path}")
 plt.show()
